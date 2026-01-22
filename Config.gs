@@ -68,11 +68,12 @@ const CONFIG = {
   // Column definitions for each sheet
   COLUMNS: {
     INBOX: [
-      'Toggl Entry ID', 'Toggl User', 'QBO Employee', 'Toggl Client',
-      'Toggl Project', 'QBO Customer', 'QBO Project', 'Toggl Task',
-      'QBO Service Item', 'Description', 'Date', 'Duration (hrs)',
-      'Billable', 'Start Time', 'Stop Time', 'Tags', 'Status',
-      'Validation Errors', 'Approved', 'Imported At', 'Notes'
+      'Date', 'Start Time', 'End Time', 'Duration',
+      'Toggl User', 'QBO Employee',
+      'Toggl Client', 'Toggl Project', 'QBO Customer', 'QBO Project',
+      'Toggl Task', 'QBO Service Item',
+      'Description', 'Billable', 'Tags', 'Status', 'Approved',
+      'Toggl Entry ID', 'Validation Errors', 'Imported At', 'Notes'
     ],
     QUEUE: [
       'Toggl Entry ID', 'QBO Employee ID', 'QBO Employee Name',
@@ -368,6 +369,36 @@ function formatDateTime(date) {
  */
 function secondsToHours(seconds) {
   return Math.round((seconds / 3600) * 100) / 100;
+}
+
+/**
+ * Formats duration in seconds to h:mm format
+ * @param {number} seconds - Duration in seconds
+ * @returns {string} Formatted duration (e.g., "1:30" for 1 hour 30 minutes)
+ */
+function formatDuration(seconds) {
+  if (!seconds || seconds <= 0) return '0:00';
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return `${hours}:${minutes.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Parses h:mm duration format to seconds
+ * @param {string} duration - Duration in h:mm format
+ * @returns {number} Duration in seconds
+ */
+function parseDuration(duration) {
+  if (!duration) return 0;
+  const parts = String(duration).split(':');
+  if (parts.length === 2) {
+    const hours = parseInt(parts[0], 10) || 0;
+    const minutes = parseInt(parts[1], 10) || 0;
+    return (hours * 3600) + (minutes * 60);
+  }
+  // If it's just a number, assume hours
+  const hours = parseFloat(duration) || 0;
+  return hours * 3600;
 }
 
 /**

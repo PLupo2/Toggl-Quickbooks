@@ -223,11 +223,17 @@ function getServiceItemsForMasterList() {
 
 /**
  * Fetches projects using GraphQL API
- * Falls back gracefully if Projects scope unavailable
+ * Note: QBO Projects require QuickBooks Online Plus or Advanced subscription
+ * and the project-management.project scope (not available to all apps).
+ * If projects return empty, it may be because:
+ * 1. The QBO subscription doesn't include Projects
+ * 2. No projects have been created in QBO
+ * 3. The app doesn't have the required scope
  * @returns {Object[]} Array of project objects
  */
 function fetchQBOProjects() {
   logMessage('Fetching QBO projects via GraphQL...', 'INFO');
+  logMessage('Note: Projects require QBO Plus/Advanced subscription', 'INFO');
 
   try {
     const accessToken = getValidAccessToken();
@@ -265,15 +271,20 @@ function fetchQBOProjects() {
     const responseCode = response.getResponseCode();
     const responseBody = response.getContentText();
 
+    logMessage(`GraphQL response code: ${responseCode}`, 'INFO');
+
     if (responseCode !== 200) {
       logMessage(`GraphQL projects fetch failed: ${responseCode} - ${responseBody}`, 'WARN');
+      logMessage('Projects may not be available for your QBO subscription', 'WARN');
       return [];
     }
 
     const result = JSON.parse(responseBody);
 
     if (result.errors) {
-      logMessage(`GraphQL errors: ${JSON.stringify(result.errors)}`, 'WARN');
+      const errorMessages = result.errors.map(e => e.message).join('; ');
+      logMessage(`GraphQL errors: ${errorMessages}`, 'WARN');
+      logMessage('This is normal if your QBO subscription does not include Projects', 'INFO');
       return [];
     }
 
@@ -283,11 +294,41 @@ function fetchQBOProjects() {
       .filter(p => p.status === 'ACTIVE' || p.status === 'IN_PROGRESS');
 
     logMessage(`Fetched ${projectList.length} projects`, 'INFO');
+
+    if (projectList.length === 0) {
+      logMessage('No projects found. This could mean:', 'INFO');
+      logMessage('- No projects created in QBO yet', 'INFO');
+      logMessage('- QBO subscription does not include Projects feature', 'INFO');
+      logMessage('- App does not have project-management scope', 'INFO');
+    }
+
     return projectList;
   } catch (error) {
     logMessage(`Error fetching projects: ${error.message}`, 'WARN');
+    logMessage('Projects feature may not be available', 'INFO');
     return [];
   }
+}
+
+/**
+ * Shows information about QBO Projects availability
+ */
+function showProjectsInfo() {
+  const projects = fetchQBOProjects();
+
+  let message;
+  if (projects.length > 0) {
+    message = `Found ${projects.length} QBO Projects.\n\nProjects are available and working correctly.`;
+  } else {
+    message = `No QBO Projects found.\n\nThis could mean:\n` +
+      `• Your QBO subscription doesn't include Projects (requires Plus or Advanced)\n` +
+      `• No projects have been created in QBO yet\n` +
+      `• The app doesn't have the project-management scope\n\n` +
+      `Note: QBO Projects are optional. You can still sync time entries ` +
+      `using Customers only (without Projects).`;
+  }
+
+  showAlert(message, 'QBO Projects Status');
 }
 
 /**

@@ -90,6 +90,7 @@ function refreshQBOServiceItemsMaster() {
 
 /**
  * Refreshes QBO Projects master list
+ * Note: Projects are optional and may not be available depending on QBO subscription
  */
 function refreshQBOProjectsMaster() {
   logMessage('Refreshing QBO Projects master...', 'INFO');
@@ -103,9 +104,11 @@ function refreshQBOProjectsMaster() {
 
   if (projects.length > 0) {
     sheet.getRange(2, 1, projects.length, 2).setValues(projects);
+    logMessage(`Updated ${projects.length} projects in master list`, 'INFO');
+  } else {
+    logMessage('No QBO Projects found - this is normal if your QBO subscription does not include Projects', 'INFO');
+    logMessage('You can still sync time entries using Customers only', 'INFO');
   }
-
-  logMessage(`Updated ${projects.length} projects in master list`, 'INFO');
 }
 
 // ============================================================================

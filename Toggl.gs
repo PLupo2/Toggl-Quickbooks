@@ -88,6 +88,28 @@ function togglReportsV3(endpoint, payload) {
 }
 
 // ============================================================================
+// TAG OPERATIONS
+// ============================================================================
+
+/**
+ * Fetches all tags in the workspace
+ * @returns {Object[]} Array of tag objects
+ */
+function fetchTogglTags() {
+  const workspaceId = getOrFetchWorkspaceId();
+  logMessage('Fetching Toggl tags...', 'INFO');
+
+  try {
+    const tags = togglApiV9(`/workspaces/${workspaceId}/tags`);
+    logMessage(`Fetched ${tags.length} tags`, 'INFO');
+    return tags;
+  } catch (error) {
+    logMessage(`Error fetching tags: ${error.message}`, 'WARN');
+    return [];
+  }
+}
+
+// ============================================================================
 // WORKSPACE OPERATIONS
 // ============================================================================
 
@@ -456,16 +478,17 @@ function getExistingEntryIds() {
   const ss = getSpreadsheet();
   const existingIds = new Set();
 
-  // Check Inbox
+  // Check Inbox - Toggl Entry ID is now in column 18 (INBOX_COL.TOGGL_ENTRY_ID)
   const inboxSheet = ss.getSheetByName(CONFIG.SHEETS.INBOX);
   if (inboxSheet && inboxSheet.getLastRow() > 1) {
-    const inboxIds = inboxSheet.getRange(2, 1, inboxSheet.getLastRow() - 1, 1).getValues();
+    // Column 18 is Toggl Entry ID in the new layout
+    const inboxIds = inboxSheet.getRange(2, 18, inboxSheet.getLastRow() - 1, 1).getValues();
     inboxIds.forEach(row => {
       if (row[0]) existingIds.add(String(row[0]));
     });
   }
 
-  // Check Queue
+  // Check Queue - Toggl Entry ID is still in column 1
   const queueSheet = ss.getSheetByName(CONFIG.SHEETS.QUEUE);
   if (queueSheet && queueSheet.getLastRow() > 1) {
     const queueIds = queueSheet.getRange(2, 1, queueSheet.getLastRow() - 1, 1).getValues();
@@ -474,7 +497,7 @@ function getExistingEntryIds() {
     });
   }
 
-  // Check Archive
+  // Check Archive - Toggl Entry ID is still in column 1
   const archiveSheet = ss.getSheetByName(CONFIG.SHEETS.ARCHIVE);
   if (archiveSheet && archiveSheet.getLastRow() > 1) {
     const archiveIds = archiveSheet.getRange(2, 1, archiveSheet.getLastRow() - 1, 1).getValues();
@@ -488,18 +511,20 @@ function getExistingEntryIds() {
 
 /**
  * Builds lookup maps for Toggl entities
- * @returns {Object} Lookup maps for users, clients, projects, tasks
+ * @returns {Object} Lookup maps for users, clients, projects, tasks, tags
  */
 function buildTogglLookups() {
   const users = fetchTogglUsers();
   const clients = fetchTogglClients();
   const projects = fetchTogglProjects(false); // Include inactive for historical data
+  const tags = fetchTogglTags();
 
   const lookups = {
     users: {},
     clients: {},
     projects: {},
-    tasks: {}
+    tasks: {},
+    tags: {}
   };
 
   users.forEach(u => {
@@ -516,6 +541,12 @@ function buildTogglLookups() {
       clientId: p.client_id,
       clientName: p.client_id ? lookups.clients[p.client_id] : ''
     };
+  });
+
+  // Build tag lookup (by ID and by name for flexibility)
+  tags.forEach(t => {
+    lookups.tags[t.id] = t.name;
+    lookups.tags[t.name] = t.name; // Also map name to name for string tags
   });
 
   // Fetch tasks for each project
@@ -592,6 +623,20 @@ function processTimeEntry(entry, lookups) {
   // Get project and client info
   const projectInfo = projectId ? lookups.projects[projectId] : null;
 
+  // Resolve tag IDs to tag names
+  const rawTags = entry.tags || entry.tag_ids || [];
+  const resolvedTags = rawTags.map(tag => {
+    // If it's already a string name, use it; otherwise look up the ID
+    if (typeof tag === 'string') {
+      return tag;
+    }
+    return lookups.tags[tag] || String(tag);
+  });
+
+  // Format start/end times for display (extract just time portion)
+  const startTime = entry.start ? formatTimeOnly(entry.start) : '';
+  const endTime = entry.stop ? formatTimeOnly(entry.stop) : '';
+
   return {
     togglEntryId: entryId,
     togglUser: lookups.users[userId] || String(userId),
@@ -604,17 +649,40 @@ function processTimeEntry(entry, lookups) {
     togglTaskId: taskId || '',
     description: entry.description || '',
     date: formatDate(entry.start),
-    durationHours: secondsToHours(durationSeconds),
+    durationSeconds: durationSeconds,
+    durationFormatted: formatDuration(durationSeconds),
     billable: entry.billable || false,
-    startTime: entry.start || '',
-    stopTime: entry.stop || '',
-    tags: (entry.tags || entry.tag_ids || []).join(', '),
+    startTime: startTime,
+    endTime: endTime,
+    tags: resolvedTags.join(', '),
     importedAt: formatDateTime(new Date())
   };
 }
 
 /**
+ * Formats an ISO timestamp to just the time portion (HH:MM)
+ * @param {string} isoTimestamp - ISO timestamp
+ * @returns {string} Formatted time (HH:MM)
+ */
+function formatTimeOnly(isoTimestamp) {
+  if (!isoTimestamp) return '';
+  try {
+    const date = new Date(isoTimestamp);
+    return Utilities.formatDate(date, Session.getScriptTimeZone(), 'HH:mm');
+  } catch (e) {
+    return '';
+  }
+}
+
+/**
  * Writes processed entries to the Inbox sheet
+ * Uses the new column order:
+ * 1: Date, 2: Start Time, 3: End Time, 4: Duration
+ * 5: Toggl User, 6: QBO Employee
+ * 7: Toggl Client, 8: Toggl Project, 9: QBO Customer, 10: QBO Project
+ * 11: Toggl Task, 12: QBO Service Item
+ * 13: Description, 14: Billable, 15: Tags, 16: Status, 17: Approved
+ * 18: Toggl Entry ID, 19: Validation Errors, 20: Imported At, 21: Notes
  * @param {Object[]} entries - Processed entries
  */
 function writeToInbox(entries) {
@@ -622,32 +690,39 @@ function writeToInbox(entries) {
   const inboxSheet = getOrCreateSheet(CONFIG.SHEETS.INBOX, CONFIG.COLUMNS.INBOX);
 
   const rows = entries.map(e => [
-    e.togglEntryId,
-    e.togglUser,
-    '', // QBO Employee - to be mapped
-    e.togglClient,
-    e.togglProject,
-    '', // QBO Customer - to be mapped
-    '', // QBO Project - to be mapped
-    e.togglTask,
-    '', // QBO Service Item - to be mapped
-    e.description,
-    e.date,
-    e.durationHours,
-    e.billable,
-    e.startTime,
-    e.stopTime,
-    e.tags,
-    'Pending Review', // Status
-    '', // Validation Errors
-    false, // Approved
-    e.importedAt,
-    '' // Notes
+    e.date,                    // 1: Date
+    e.startTime,               // 2: Start Time
+    e.endTime,                 // 3: End Time
+    e.durationFormatted,       // 4: Duration (h:mm format)
+    e.togglUser,               // 5: Toggl User
+    '',                        // 6: QBO Employee - to be mapped
+    e.togglClient,             // 7: Toggl Client
+    e.togglProject,            // 8: Toggl Project
+    '',                        // 9: QBO Customer - to be mapped
+    '',                        // 10: QBO Project - to be mapped
+    e.togglTask,               // 11: Toggl Task
+    '',                        // 12: QBO Service Item - to be mapped
+    e.description,             // 13: Description
+    e.billable,                // 14: Billable
+    e.tags,                    // 15: Tags
+    'Pending Review',          // 16: Status
+    'Pending',                 // 17: Approved (dropdown value)
+    e.togglEntryId,            // 18: Toggl Entry ID
+    '',                        // 19: Validation Errors
+    e.importedAt,              // 20: Imported At
+    ''                         // 21: Notes
   ]);
 
   if (rows.length > 0) {
     const lastRow = inboxSheet.getLastRow();
     inboxSheet.getRange(lastRow + 1, 1, rows.length, rows[0].length).setValues(rows);
+
+    // Apply formatting to new rows
+    const inboxSheetRef = ss.getSheetByName(CONFIG.SHEETS.INBOX);
+    if (inboxSheetRef) {
+      // Wire dropdowns and apply formatting for new entries
+      wireInboxDropdowns();
+    }
   }
 }
 

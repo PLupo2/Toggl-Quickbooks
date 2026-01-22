@@ -1,7 +1,57 @@
 /**
  * Inbox.gs - Inbox sheet builder and management
  * Handles Inbox sheet setup, validation display, and approval workflow
+ *
+ * Column Order (1-indexed):
+ * 1: Date, 2: Start Time, 3: End Time, 4: Duration
+ * 5: Toggl User, 6: QBO Employee
+ * 7: Toggl Client, 8: Toggl Project, 9: QBO Customer, 10: QBO Project
+ * 11: Toggl Task, 12: QBO Service Item
+ * 13: Description, 14: Billable, 15: Tags, 16: Status, 17: Approved
+ * 18: Toggl Entry ID, 19: Validation Errors, 20: Imported At, 21: Notes
  */
+
+// Column index constants for the new order (1-based)
+const INBOX_COL = {
+  DATE: 1,
+  START_TIME: 2,
+  END_TIME: 3,
+  DURATION: 4,
+  TOGGL_USER: 5,
+  QBO_EMPLOYEE: 6,
+  TOGGL_CLIENT: 7,
+  TOGGL_PROJECT: 8,
+  QBO_CUSTOMER: 9,
+  QBO_PROJECT: 10,
+  TOGGL_TASK: 11,
+  QBO_SERVICE_ITEM: 12,
+  DESCRIPTION: 13,
+  BILLABLE: 14,
+  TAGS: 15,
+  STATUS: 16,
+  APPROVED: 17,
+  TOGGL_ENTRY_ID: 18,
+  VALIDATION_ERRORS: 19,
+  IMPORTED_AT: 20,
+  NOTES: 21
+};
+
+// Visual grouping colors
+const GROUP_COLORS = {
+  TIME_INFO: '#e8f4f8',      // Light blue for Date/Time/Duration
+  USER_MAPPING: '#fff2cc',    // Light yellow for Toggl User / QBO Employee
+  PROJECT_MAPPING: '#d9ead3', // Light green for Client/Project mapping
+  TASK_MAPPING: '#fce5cd',    // Light orange for Task / Service Item
+  NEUTRAL: '#ffffff'          // White for other columns
+};
+
+// Approval status options
+const APPROVAL_STATUS = {
+  PENDING: 'Pending',
+  APPROVED: 'Approved',
+  REJECTED: 'Rejected',
+  ON_HOLD: 'On Hold'
+};
 
 // ============================================================================
 // INBOX SHEET SETUP
@@ -23,50 +73,137 @@ function setupInboxSheet() {
     inboxSheet.getRange(1, 1, 1, CONFIG.COLUMNS.INBOX.length).setValues([CONFIG.COLUMNS.INBOX]);
   }
 
-  // Format headers
-  const headerRange = inboxSheet.getRange(1, 1, 1, CONFIG.COLUMNS.INBOX.length);
-  headerRange.setFontWeight('bold');
-  headerRange.setBackground('#4a86e8');
-  headerRange.setFontColor('#ffffff');
-  headerRange.setWrap(true);
+  // Apply header formatting with visual grouping
+  formatInboxHeaders(inboxSheet);
 
   // Freeze header row
   inboxSheet.setFrozenRows(1);
 
   // Set column widths
-  const columnWidths = {
-    1: 120,   // Toggl Entry ID
-    2: 150,   // Toggl User
-    3: 150,   // QBO Employee
-    4: 150,   // Toggl Client
-    5: 180,   // Toggl Project
-    6: 150,   // QBO Customer
-    7: 150,   // QBO Project
-    8: 180,   // Toggl Task
-    9: 150,   // QBO Service Item
-    10: 250,  // Description
-    11: 100,  // Date
-    12: 100,  // Duration (hrs)
-    13: 80,   // Billable
-    14: 150,  // Start Time
-    15: 150,  // Stop Time
-    16: 150,  // Tags
-    17: 120,  // Status
-    18: 200,  // Validation Errors
-    19: 80,   // Approved
-    20: 150,  // Imported At
-    21: 200   // Notes
-  };
-
-  Object.entries(columnWidths).forEach(([col, width]) => {
-    inboxSheet.setColumnWidth(parseInt(col, 10), width);
-  });
+  setInboxColumnWidths(inboxSheet);
 
   logMessage('Inbox sheet setup complete', 'INFO');
 }
 
 /**
- * Adds data validation dropdowns to Inbox sheet for QBO mappings
+ * Formats Inbox headers with visual grouping colors
+ * @param {Sheet} inboxSheet - The Inbox sheet
+ */
+function formatInboxHeaders(inboxSheet) {
+  const headerRange = inboxSheet.getRange(1, 1, 1, CONFIG.COLUMNS.INBOX.length);
+  headerRange.setFontWeight('bold');
+  headerRange.setFontColor('#000000');
+  headerRange.setWrap(true);
+  headerRange.setVerticalAlignment('middle');
+
+  // Apply group colors to header
+  // Time info (Date, Start, End, Duration)
+  inboxSheet.getRange(1, INBOX_COL.DATE, 1, 4).setBackground('#b4d7e8');
+
+  // User mapping (Toggl User, QBO Employee)
+  inboxSheet.getRange(1, INBOX_COL.TOGGL_USER, 1, 2).setBackground('#ffe599');
+
+  // Project mapping (Toggl Client, Toggl Project, QBO Customer, QBO Project)
+  inboxSheet.getRange(1, INBOX_COL.TOGGL_CLIENT, 1, 4).setBackground('#b6d7a8');
+
+  // Task mapping (Toggl Task, QBO Service Item)
+  inboxSheet.getRange(1, INBOX_COL.TOGGL_TASK, 1, 2).setBackground('#f9cb9c');
+
+  // Other columns - neutral
+  inboxSheet.getRange(1, INBOX_COL.DESCRIPTION, 1, 1).setBackground('#d9d9d9');
+  inboxSheet.getRange(1, INBOX_COL.BILLABLE, 1, 4).setBackground('#d9d9d9');
+  inboxSheet.getRange(1, INBOX_COL.TOGGL_ENTRY_ID, 1, 4).setBackground('#d9d9d9');
+
+  // Add borders to separate groups
+  addGroupBorders(inboxSheet);
+}
+
+/**
+ * Adds borders to visually separate column groups
+ * @param {Sheet} inboxSheet - The Inbox sheet
+ */
+function addGroupBorders(inboxSheet) {
+  const lastRow = Math.max(inboxSheet.getLastRow(), 1);
+
+  // Add right borders after each group
+  const borderColumns = [
+    INBOX_COL.DURATION,      // After time info
+    INBOX_COL.QBO_EMPLOYEE,  // After user mapping
+    INBOX_COL.QBO_PROJECT,   // After project mapping
+    INBOX_COL.QBO_SERVICE_ITEM, // After task mapping
+    INBOX_COL.APPROVED       // After status/approval
+  ];
+
+  borderColumns.forEach(col => {
+    inboxSheet.getRange(1, col, lastRow, 1).setBorder(
+      null, null, null, true, null, null,
+      '#666666', SpreadsheetApp.BorderStyle.SOLID_MEDIUM
+    );
+  });
+}
+
+/**
+ * Sets column widths for the Inbox sheet
+ * @param {Sheet} inboxSheet - The Inbox sheet
+ */
+function setInboxColumnWidths(inboxSheet) {
+  const columnWidths = {
+    [INBOX_COL.DATE]: 100,
+    [INBOX_COL.START_TIME]: 85,
+    [INBOX_COL.END_TIME]: 85,
+    [INBOX_COL.DURATION]: 75,
+    [INBOX_COL.TOGGL_USER]: 130,
+    [INBOX_COL.QBO_EMPLOYEE]: 130,
+    [INBOX_COL.TOGGL_CLIENT]: 130,
+    [INBOX_COL.TOGGL_PROJECT]: 150,
+    [INBOX_COL.QBO_CUSTOMER]: 130,
+    [INBOX_COL.QBO_PROJECT]: 130,
+    [INBOX_COL.TOGGL_TASK]: 150,
+    [INBOX_COL.QBO_SERVICE_ITEM]: 130,
+    [INBOX_COL.DESCRIPTION]: 200,
+    [INBOX_COL.BILLABLE]: 70,
+    [INBOX_COL.TAGS]: 120,
+    [INBOX_COL.STATUS]: 100,
+    [INBOX_COL.APPROVED]: 100,
+    [INBOX_COL.TOGGL_ENTRY_ID]: 120,
+    [INBOX_COL.VALIDATION_ERRORS]: 180,
+    [INBOX_COL.IMPORTED_AT]: 140,
+    [INBOX_COL.NOTES]: 150
+  };
+
+  Object.entries(columnWidths).forEach(([col, width]) => {
+    inboxSheet.setColumnWidth(parseInt(col, 10), width);
+  });
+}
+
+/**
+ * Applies visual grouping colors to data rows
+ * @param {Sheet} inboxSheet - The Inbox sheet
+ */
+function applyRowGroupColors(inboxSheet) {
+  const lastRow = inboxSheet.getLastRow();
+  if (lastRow <= 1) return;
+
+  const dataRows = lastRow - 1;
+
+  // Time info columns
+  inboxSheet.getRange(2, INBOX_COL.DATE, dataRows, 4).setBackground(GROUP_COLORS.TIME_INFO);
+
+  // User mapping columns
+  inboxSheet.getRange(2, INBOX_COL.TOGGL_USER, dataRows, 2).setBackground(GROUP_COLORS.USER_MAPPING);
+
+  // Project mapping columns
+  inboxSheet.getRange(2, INBOX_COL.TOGGL_CLIENT, dataRows, 4).setBackground(GROUP_COLORS.PROJECT_MAPPING);
+
+  // Task mapping columns
+  inboxSheet.getRange(2, INBOX_COL.TOGGL_TASK, dataRows, 2).setBackground(GROUP_COLORS.TASK_MAPPING);
+
+  // Re-apply borders
+  addGroupBorders(inboxSheet);
+}
+
+/**
+ * Adds data validation dropdowns and checkboxes to Inbox sheet
  */
 function wireInboxDropdowns() {
   const ss = getSpreadsheet();
@@ -79,23 +216,39 @@ function wireInboxDropdowns() {
 
   const dataRows = inboxSheet.getLastRow() - 1;
 
-  // Employee dropdown (column 3)
-  wireInboxColumnDropdown(inboxSheet, 3, CONFIG.SHEETS.QBO_EMPLOYEES, dataRows);
+  // QBO Employee dropdown (column 6)
+  wireInboxColumnDropdown(inboxSheet, INBOX_COL.QBO_EMPLOYEE, CONFIG.SHEETS.QBO_EMPLOYEES, dataRows);
 
-  // Customer dropdown (column 6)
-  wireInboxColumnDropdown(inboxSheet, 6, CONFIG.SHEETS.QBO_CUSTOMERS, dataRows);
+  // QBO Customer dropdown (column 9)
+  wireInboxColumnDropdown(inboxSheet, INBOX_COL.QBO_CUSTOMER, CONFIG.SHEETS.QBO_CUSTOMERS, dataRows);
 
-  // Project dropdown (column 7)
-  wireInboxColumnDropdown(inboxSheet, 7, CONFIG.SHEETS.QBO_PROJECTS, dataRows);
+  // QBO Project dropdown (column 10)
+  wireInboxColumnDropdown(inboxSheet, INBOX_COL.QBO_PROJECT, CONFIG.SHEETS.QBO_PROJECTS, dataRows);
 
-  // Service Item dropdown (column 9)
-  wireInboxColumnDropdown(inboxSheet, 9, CONFIG.SHEETS.QBO_ITEMS, dataRows);
+  // QBO Service Item dropdown (column 12)
+  wireInboxColumnDropdown(inboxSheet, INBOX_COL.QBO_SERVICE_ITEM, CONFIG.SHEETS.QBO_ITEMS, dataRows);
 
-  // Approved checkbox (column 19) - boolean
-  const approvedRule = SpreadsheetApp.newDataValidation()
+  // Billable checkbox (column 14)
+  const billableRule = SpreadsheetApp.newDataValidation()
     .requireCheckbox()
     .build();
-  inboxSheet.getRange(2, 19, dataRows, 1).setDataValidation(approvedRule);
+  inboxSheet.getRange(2, INBOX_COL.BILLABLE, dataRows, 1).setDataValidation(billableRule);
+
+  // Approved dropdown with options (column 17)
+  const approvalRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList([
+      APPROVAL_STATUS.PENDING,
+      APPROVAL_STATUS.APPROVED,
+      APPROVAL_STATUS.REJECTED,
+      APPROVAL_STATUS.ON_HOLD
+    ], true)
+    .setAllowInvalid(false)
+    .build();
+  inboxSheet.getRange(2, INBOX_COL.APPROVED, dataRows, 1).setDataValidation(approvalRule);
+
+  // Apply visual grouping and conditional formatting
+  applyRowGroupColors(inboxSheet);
+  applyInboxConditionalFormatting(inboxSheet);
 
   showToast('Inbox dropdowns wired successfully!');
 }
@@ -158,12 +311,12 @@ function validateInboxEntries() {
     const errors = validateInboxRow(row, mappings);
 
     if (errors.length === 0) {
-      inboxSheet.getRange(rowNum, 17).setValue('Ready');
-      inboxSheet.getRange(rowNum, 18).setValue('');
+      inboxSheet.getRange(rowNum, INBOX_COL.STATUS).setValue('Ready');
+      inboxSheet.getRange(rowNum, INBOX_COL.VALIDATION_ERRORS).setValue('');
       validCount++;
     } else {
-      inboxSheet.getRange(rowNum, 17).setValue('Needs Review');
-      inboxSheet.getRange(rowNum, 18).setValue(errors.join('; '));
+      inboxSheet.getRange(rowNum, INBOX_COL.STATUS).setValue('Needs Review');
+      inboxSheet.getRange(rowNum, INBOX_COL.VALIDATION_ERRORS).setValue(errors.join('; '));
       invalidCount++;
     }
   }
@@ -178,22 +331,23 @@ function validateInboxEntries() {
 
 /**
  * Validates a single Inbox row
- * @param {Array} row - Inbox row data
+ * @param {Array} row - Inbox row data (0-indexed)
  * @param {Object} mappings - Mapping lookups
  * @returns {string[]} Array of error messages
  */
 function validateInboxRow(row, mappings) {
   const errors = [];
 
-  const togglUser = row[1];
-  const qboEmployee = row[2];
-  const togglClient = row[3];
-  const togglProject = row[4];
-  const qboCustomer = row[5];
-  const togglTask = row[7];
-  const qboServiceItem = row[8];
-  const date = row[10];
-  const duration = row[11];
+  // Get values using 0-indexed positions (subtract 1 from INBOX_COL constants)
+  const togglUser = row[INBOX_COL.TOGGL_USER - 1];
+  const qboEmployee = row[INBOX_COL.QBO_EMPLOYEE - 1];
+  const togglClient = row[INBOX_COL.TOGGL_CLIENT - 1];
+  const togglProject = row[INBOX_COL.TOGGL_PROJECT - 1];
+  const qboCustomer = row[INBOX_COL.QBO_CUSTOMER - 1];
+  const togglTask = row[INBOX_COL.TOGGL_TASK - 1];
+  const qboServiceItem = row[INBOX_COL.QBO_SERVICE_ITEM - 1];
+  const date = row[INBOX_COL.DATE - 1];
+  const duration = row[INBOX_COL.DURATION - 1];
 
   // Check Employee mapping
   let hasEmployee = !!qboEmployee;
@@ -234,7 +388,7 @@ function validateInboxRow(row, mappings) {
     errors.push('Missing date');
   }
 
-  if (!duration || duration <= 0) {
+  if (!duration) {
     errors.push('Invalid duration');
   }
 
@@ -252,44 +406,68 @@ function applyInboxConditionalFormatting(inboxSheet) {
   const lastRow = inboxSheet.getLastRow();
   if (lastRow <= 1) return;
 
+  const dataRows = lastRow - 1;
   const rules = [];
 
-  // Status column formatting
-  const statusRange = inboxSheet.getRange(2, 17, lastRow - 1, 1);
+  // Status column formatting (column 16)
+  const statusRange = inboxSheet.getRange(2, INBOX_COL.STATUS, dataRows, 1);
 
   // Ready = green background
-  const readyRule = SpreadsheetApp.newConditionalFormatRule()
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
     .whenTextEqualTo('Ready')
     .setBackground('#b7e1cd')
     .setRanges([statusRange])
-    .build();
-  rules.push(readyRule);
+    .build());
 
   // Needs Review = yellow background
-  const reviewRule = SpreadsheetApp.newConditionalFormatRule()
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
     .whenTextEqualTo('Needs Review')
     .setBackground('#fce8b2')
     .setRanges([statusRange])
-    .build();
-  rules.push(reviewRule);
+    .build());
 
-  // Validation Errors column - red if not empty
-  const errorsRange = inboxSheet.getRange(2, 18, lastRow - 1, 1);
-  const errorsRule = SpreadsheetApp.newConditionalFormatRule()
-    .whenTextContains(';')
+  // Approved column formatting (column 17)
+  const approvedRange = inboxSheet.getRange(2, INBOX_COL.APPROVED, dataRows, 1);
+
+  // Approved = green
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo(APPROVAL_STATUS.APPROVED)
+    .setBackground('#b7e1cd')
+    .setFontColor('#0d652d')
+    .setRanges([approvedRange])
+    .build());
+
+  // Pending = light gray
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo(APPROVAL_STATUS.PENDING)
+    .setBackground('#f3f3f3')
+    .setFontColor('#666666')
+    .setRanges([approvedRange])
+    .build());
+
+  // Rejected = red
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo(APPROVAL_STATUS.REJECTED)
+    .setBackground('#f4c7c3')
+    .setFontColor('#a94442')
+    .setRanges([approvedRange])
+    .build());
+
+  // On Hold = orange
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo(APPROVAL_STATUS.ON_HOLD)
+    .setBackground('#fce8b2')
+    .setFontColor('#8a6d3b')
+    .setRanges([approvedRange])
+    .build());
+
+  // Validation Errors column - red if not empty (column 19)
+  const errorsRange = inboxSheet.getRange(2, INBOX_COL.VALIDATION_ERRORS, dataRows, 1);
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextContains('mapping')
     .setBackground('#f4c7c3')
     .setRanges([errorsRange])
-    .build();
-  rules.push(errorsRule);
-
-  // Approved column - highlight approved rows
-  const approvedRange = inboxSheet.getRange(2, 19, lastRow - 1, 1);
-  const approvedRule = SpreadsheetApp.newConditionalFormatRule()
-    .whenTextEqualTo('TRUE')
-    .setBackground('#c9daf8')
-    .setRanges([approvedRange])
-    .build();
-  rules.push(approvedRule);
+    .build());
 
   inboxSheet.setConditionalFormatRules(rules);
 }
@@ -300,7 +478,6 @@ function applyInboxConditionalFormatting(inboxSheet) {
 
 /**
  * Auto-populates QBO columns in Inbox based on existing mappings
- * Useful for entries that have mappings but weren't populated on import
  */
 function autoPopulateInboxMappings() {
   showToast('Auto-populating Inbox mappings...');
@@ -325,40 +502,47 @@ function autoPopulateInboxMappings() {
     let updated = false;
 
     // Auto-populate Employee
-    if (!row[2] && row[1]) { // No QBO Employee but has Toggl User
-      const userMapping = findUserMappingByName(row[1], mappings);
+    const togglUser = row[INBOX_COL.TOGGL_USER - 1];
+    const qboEmployee = row[INBOX_COL.QBO_EMPLOYEE - 1];
+    if (!qboEmployee && togglUser) {
+      const userMapping = findUserMappingByName(togglUser, mappings);
       if (userMapping && userMapping.qboEmployeeName) {
-        inboxSheet.getRange(rowNum, 3).setValue(userMapping.qboEmployeeName);
+        inboxSheet.getRange(rowNum, INBOX_COL.QBO_EMPLOYEE).setValue(userMapping.qboEmployeeName);
         updated = true;
       }
     }
 
     // Auto-populate Customer from Project mapping
-    if (!row[5] && row[4]) { // No QBO Customer but has Toggl Project
-      const projectMapping = findProjectMappingByName(row[4], mappings);
+    const togglProject = row[INBOX_COL.TOGGL_PROJECT - 1];
+    const qboCustomer = row[INBOX_COL.QBO_CUSTOMER - 1];
+    if (!qboCustomer && togglProject) {
+      const projectMapping = findProjectMappingByName(togglProject, mappings);
       if (projectMapping && projectMapping.qboCustomerName) {
-        inboxSheet.getRange(rowNum, 6).setValue(projectMapping.qboCustomerName);
+        inboxSheet.getRange(rowNum, INBOX_COL.QBO_CUSTOMER).setValue(projectMapping.qboCustomerName);
         if (projectMapping.qboProjectName) {
-          inboxSheet.getRange(rowNum, 7).setValue(projectMapping.qboProjectName);
+          inboxSheet.getRange(rowNum, INBOX_COL.QBO_PROJECT).setValue(projectMapping.qboProjectName);
         }
         updated = true;
       }
     }
 
     // Auto-populate Customer from Client mapping
-    if (!row[5] && !row[4] && row[3]) { // No QBO Customer, no Toggl Project, has Toggl Client
-      const clientMapping = findClientMappingByName(row[3], mappings);
+    const togglClient = row[INBOX_COL.TOGGL_CLIENT - 1];
+    if (!qboCustomer && !togglProject && togglClient) {
+      const clientMapping = findClientMappingByName(togglClient, mappings);
       if (clientMapping && clientMapping.qboCustomerName) {
-        inboxSheet.getRange(rowNum, 6).setValue(clientMapping.qboCustomerName);
+        inboxSheet.getRange(rowNum, INBOX_COL.QBO_CUSTOMER).setValue(clientMapping.qboCustomerName);
         updated = true;
       }
     }
 
     // Auto-populate Service Item from Task mapping
-    if (!row[8] && row[7]) { // No QBO Service Item but has Toggl Task
-      const taskMapping = findTaskMappingByName(row[7], row[4], mappings);
+    const togglTask = row[INBOX_COL.TOGGL_TASK - 1];
+    const qboServiceItem = row[INBOX_COL.QBO_SERVICE_ITEM - 1];
+    if (!qboServiceItem && togglTask) {
+      const taskMapping = findTaskMappingByName(togglTask, togglProject, mappings);
       if (taskMapping && taskMapping.qboServiceItemName) {
-        inboxSheet.getRange(rowNum, 9).setValue(taskMapping.qboServiceItemName);
+        inboxSheet.getRange(rowNum, INBOX_COL.QBO_SERVICE_ITEM).setValue(taskMapping.qboServiceItemName);
         updated = true;
       }
     }
@@ -398,8 +582,10 @@ function showInboxStats() {
     ready: 0,
     needsReview: 0,
     approved: 0,
-    totalHours: 0,
-    billableHours: 0,
+    rejected: 0,
+    onHold: 0,
+    totalMinutes: 0,
+    billableMinutes: 0,
     uniqueUsers: new Set(),
     uniqueProjects: new Set(),
     dateRange: { min: null, max: null }
@@ -407,38 +593,57 @@ function showInboxStats() {
 
   data.forEach(row => {
     // Status
-    if (row[16] === 'Ready') stats.ready++;
-    if (row[16] === 'Needs Review') stats.needsReview++;
+    const status = row[INBOX_COL.STATUS - 1];
+    if (status === 'Ready') stats.ready++;
+    if (status === 'Needs Review') stats.needsReview++;
 
-    // Approved
-    if (row[18]) stats.approved++;
+    // Approval status
+    const approval = row[INBOX_COL.APPROVED - 1];
+    if (approval === APPROVAL_STATUS.APPROVED) stats.approved++;
+    if (approval === APPROVAL_STATUS.REJECTED) stats.rejected++;
+    if (approval === APPROVAL_STATUS.ON_HOLD) stats.onHold++;
 
-    // Hours
-    const hours = parseFloat(row[11]) || 0;
-    stats.totalHours += hours;
-    if (row[12]) stats.billableHours += hours;
+    // Duration (h:mm format)
+    const duration = row[INBOX_COL.DURATION - 1];
+    if (duration) {
+      const seconds = parseDuration(duration);
+      stats.totalMinutes += seconds / 60;
+      if (row[INBOX_COL.BILLABLE - 1]) {
+        stats.billableMinutes += seconds / 60;
+      }
+    }
 
     // Unique users/projects
-    if (row[1]) stats.uniqueUsers.add(row[1]);
-    if (row[4]) stats.uniqueProjects.add(row[4]);
+    if (row[INBOX_COL.TOGGL_USER - 1]) stats.uniqueUsers.add(row[INBOX_COL.TOGGL_USER - 1]);
+    if (row[INBOX_COL.TOGGL_PROJECT - 1]) stats.uniqueProjects.add(row[INBOX_COL.TOGGL_PROJECT - 1]);
 
     // Date range
-    const date = row[10];
+    const date = row[INBOX_COL.DATE - 1];
     if (date) {
       if (!stats.dateRange.min || date < stats.dateRange.min) stats.dateRange.min = date;
       if (!stats.dateRange.max || date > stats.dateRange.max) stats.dateRange.max = date;
     }
   });
 
+  const totalHours = Math.floor(stats.totalMinutes / 60);
+  const totalMins = Math.round(stats.totalMinutes % 60);
+  const billableHours = Math.floor(stats.billableMinutes / 60);
+  const billableMins = Math.round(stats.billableMinutes % 60);
+
   const message = `Inbox Statistics
 
 Total Entries: ${stats.total}
 Ready to Sync: ${stats.ready}
 Needs Review: ${stats.needsReview}
-Approved: ${stats.approved}
 
-Total Hours: ${stats.totalHours.toFixed(2)}
-Billable Hours: ${stats.billableHours.toFixed(2)}
+Approval Status:
+  Approved: ${stats.approved}
+  Rejected: ${stats.rejected}
+  On Hold: ${stats.onHold}
+  Pending: ${stats.total - stats.approved - stats.rejected - stats.onHold}
+
+Total Time: ${totalHours}:${totalMins.toString().padStart(2, '0')}
+Billable Time: ${billableHours}:${billableMins.toString().padStart(2, '0')}
 
 Unique Users: ${stats.uniqueUsers.size}
 Unique Projects: ${stats.uniqueProjects.size}
@@ -492,11 +697,11 @@ function filterNeedsReview() {
     filter = range.createFilter();
   }
 
-  // Filter Status column (17) for "Needs Review"
+  // Filter Status column for "Needs Review"
   const criteria = SpreadsheetApp.newFilterCriteria()
     .whenTextEqualTo('Needs Review')
     .build();
-  filter.setColumnFilterCriteria(17, criteria);
+  filter.setColumnFilterCriteria(INBOX_COL.STATUS, criteria);
 
   showToast('Showing entries that need review.');
 }
@@ -516,4 +721,27 @@ function clearInboxFilters() {
   }
 
   showToast('Filters cleared.');
+}
+
+/**
+ * Refreshes the Inbox formatting (visual groups, borders, conditional formatting)
+ */
+function refreshInboxFormatting() {
+  const ss = getSpreadsheet();
+  const inboxSheet = ss.getSheetByName(CONFIG.SHEETS.INBOX);
+
+  if (!inboxSheet) {
+    showToast('Inbox sheet not found.');
+    return;
+  }
+
+  formatInboxHeaders(inboxSheet);
+  setInboxColumnWidths(inboxSheet);
+
+  if (inboxSheet.getLastRow() > 1) {
+    applyRowGroupColors(inboxSheet);
+    applyInboxConditionalFormatting(inboxSheet);
+  }
+
+  showToast('Inbox formatting refreshed.');
 }

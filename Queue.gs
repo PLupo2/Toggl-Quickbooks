@@ -1,7 +1,64 @@
 /**
  * Queue.gs - Sync processing logic
  * Handles the Inbox → Queue → QBO → Archive workflow
+ *
+ * Inbox Column Order (0-indexed for array access):
+ * 0: Date, 1: Start Time, 2: End Time, 3: Duration
+ * 4: Toggl User, 5: QBO Employee
+ * 6: Toggl Client, 7: Toggl Project, 8: QBO Customer, 9: QBO Project
+ * 10: Toggl Task, 11: QBO Service Item
+ * 12: Description, 13: Billable, 14: Tags, 15: Status, 16: Approved
+ * 17: Toggl Entry ID, 18: Validation Errors, 19: Imported At, 20: Notes
  */
+
+// Inbox column indexes (0-based for array access)
+const QUEUE_INBOX_IDX = {
+  DATE: 0,
+  START_TIME: 1,
+  END_TIME: 2,
+  DURATION: 3,
+  TOGGL_USER: 4,
+  QBO_EMPLOYEE: 5,
+  TOGGL_CLIENT: 6,
+  TOGGL_PROJECT: 7,
+  QBO_CUSTOMER: 8,
+  QBO_PROJECT: 9,
+  TOGGL_TASK: 10,
+  QBO_SERVICE_ITEM: 11,
+  DESCRIPTION: 12,
+  BILLABLE: 13,
+  TAGS: 14,
+  STATUS: 15,
+  APPROVED: 16,
+  TOGGL_ENTRY_ID: 17,
+  VALIDATION_ERRORS: 18,
+  IMPORTED_AT: 19,
+  NOTES: 20
+};
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
+/**
+ * Parses duration from h:mm format to decimal hours
+ * @param {string} duration - Duration in h:mm format (e.g., "1:30")
+ * @returns {number} Duration in decimal hours (e.g., 1.5)
+ */
+function parseDurationToHours(duration) {
+  if (!duration) return 0;
+
+  const durationStr = String(duration);
+  if (durationStr.includes(':')) {
+    const parts = durationStr.split(':');
+    const hours = parseInt(parts[0], 10) || 0;
+    const minutes = parseInt(parts[1], 10) || 0;
+    return hours + (minutes / 60);
+  }
+
+  // If it's already a number, return it
+  return parseFloat(duration) || 0;
+}
 
 // ============================================================================
 // INBOX PROCESSING
@@ -37,9 +94,9 @@ function processInboxToQueue() {
     const row = data[i];
     const rowNum = i + 2;
 
-    // Check if approved (column 19, index 18)
-    const approved = row[18];
-    if (!approved) {
+    // Check if approved (column 17 = index 16, value should be "Approved")
+    const approvalStatus = row[QUEUE_INBOX_IDX.APPROVED];
+    if (approvalStatus !== 'Approved') {
       continue;
     }
 
@@ -53,10 +110,10 @@ function processInboxToQueue() {
       });
       rowsToRemove.push(rowNum);
     } else {
-      // Update validation errors in Inbox
-      inboxSheet.getRange(rowNum, 18).setValue(validation.errors.join('; '));
+      // Update validation errors in Inbox (column 19 = 1-indexed)
+      inboxSheet.getRange(rowNum, QUEUE_INBOX_IDX.VALIDATION_ERRORS + 1).setValue(validation.errors.join('; '));
       validationErrors.push({
-        togglEntryId: row[0],
+        togglEntryId: row[QUEUE_INBOX_IDX.TOGGL_ENTRY_ID],
         errors: validation.errors
       });
     }
@@ -86,27 +143,30 @@ function processInboxToQueue() {
 
 /**
  * Validates an inbox entry and resolves its QBO mappings
- * @param {Array} row - Inbox row data
+ * @param {Array} row - Inbox row data (0-indexed)
  * @param {Object} mappings - Mapping lookups
  * @returns {Object} Validation result with queueRow and errors
  */
 function validateAndResolveEntry(row, mappings) {
   const errors = [];
 
-  // Parse inbox row
-  const togglEntryId = row[0];
-  const togglUser = row[1];
-  const qboEmployeeFromInbox = row[2];
-  const togglClient = row[3];
-  const togglProject = row[4];
-  const qboCustomerFromInbox = row[5];
-  const qboProjectFromInbox = row[6];
-  const togglTask = row[7];
-  const qboServiceItemFromInbox = row[8];
-  const description = row[9];
-  const date = row[10];
-  const durationHours = row[11];
-  const billable = row[12];
+  // Parse inbox row using new column indexes
+  const date = row[QUEUE_INBOX_IDX.DATE];
+  const duration = row[QUEUE_INBOX_IDX.DURATION];
+  const togglUser = row[QUEUE_INBOX_IDX.TOGGL_USER];
+  const qboEmployeeFromInbox = row[QUEUE_INBOX_IDX.QBO_EMPLOYEE];
+  const togglClient = row[QUEUE_INBOX_IDX.TOGGL_CLIENT];
+  const togglProject = row[QUEUE_INBOX_IDX.TOGGL_PROJECT];
+  const qboCustomerFromInbox = row[QUEUE_INBOX_IDX.QBO_CUSTOMER];
+  const qboProjectFromInbox = row[QUEUE_INBOX_IDX.QBO_PROJECT];
+  const togglTask = row[QUEUE_INBOX_IDX.TOGGL_TASK];
+  const qboServiceItemFromInbox = row[QUEUE_INBOX_IDX.QBO_SERVICE_ITEM];
+  const description = row[QUEUE_INBOX_IDX.DESCRIPTION];
+  const billable = row[QUEUE_INBOX_IDX.BILLABLE];
+  const togglEntryId = row[QUEUE_INBOX_IDX.TOGGL_ENTRY_ID];
+
+  // Convert duration from h:mm format to hours
+  const durationHours = parseDurationToHours(duration);
 
   // Initialize resolved values
   let qboEmployeeId = '';
@@ -638,9 +698,9 @@ function approveAllInboxEntries() {
 
   const lastRow = inboxSheet.getLastRow();
 
-  // Set Approved column (column 19) to TRUE for all rows
-  const approvalRange = inboxSheet.getRange(2, 19, lastRow - 1, 1);
-  const values = Array(lastRow - 1).fill([true]);
+  // Set Approved column (column 17) to "Approved" for all rows
+  const approvalRange = inboxSheet.getRange(2, 17, lastRow - 1, 1);
+  const values = Array(lastRow - 1).fill(['Approved']);
   approvalRange.setValues(values);
 
   showToast(`Approved ${lastRow - 1} entries.`);

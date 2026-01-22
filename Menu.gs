@@ -33,6 +33,7 @@ function createMenu() {
         .addSeparator()
         .addItem('Show QBO Connection Status', 'showConnectionStatus')
         .addItem('Show Toggl Status', 'showTogglStatus')
+        .addItem('Check QBO Projects Availability', 'showProjectsInfo')
     )
 
     // Refresh submenu
@@ -64,6 +65,7 @@ function createMenu() {
         .addItem('Approve All Entries', 'approveAllInboxEntries')
         .addItem('Show Inbox Stats', 'showInboxStats')
         .addSeparator()
+        .addItem('Refresh Inbox Formatting', 'refreshInboxFormatting')
         .addItem('Filter: Needs Review', 'filterNeedsReview')
         .addItem('Clear Filters', 'clearInboxFilters')
         .addSeparator()
