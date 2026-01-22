@@ -9,6 +9,7 @@
 
 const OAUTH_SCOPES = [
   'com.intuit.quickbooks.accounting',
+  'com.intuit.quickbooks.project.readonly',  // Required for QBO Projects access
   'openid',
   'email',
   'profile'
