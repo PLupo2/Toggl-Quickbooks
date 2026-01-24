@@ -461,14 +461,16 @@ function fetchTimeEntriesCurrentUser(startDate, endDate) {
 
 /**
  * Fetches detailed time entries for all workspace users (Reports API v3)
+ * The Reports API returns grouped rows where each row may contain multiple time_entries.
+ * This function flattens them into individual entries for easier processing.
  * @param {string} startDate - Start date (YYYY-MM-DD)
  * @param {string} endDate - End date (YYYY-MM-DD)
- * @returns {Object[]} Array of time entry objects
+ * @returns {Object[]} Array of flattened time entry objects
  */
 function fetchTimeEntriesAllUsers(startDate, endDate) {
   logMessage(`Fetching time entries for all users: ${startDate} to ${endDate}`, 'INFO');
 
-  const allEntries = [];
+  const allRows = [];
   let hasMore = true;
   let firstRowNumber = 1;
   const pageSize = 50;
@@ -486,7 +488,7 @@ function fetchTimeEntriesAllUsers(startDate, endDate) {
     const response = togglReportsV3('/search/time_entries', payload);
 
     if (response && Array.isArray(response)) {
-      allEntries.push(...response);
+      allRows.push(...response);
       hasMore = response.length === pageSize;
       firstRowNumber += response.length;
     } else {
@@ -497,8 +499,40 @@ function fetchTimeEntriesAllUsers(startDate, endDate) {
     Utilities.sleep(100);
   }
 
-  logMessage(`Fetched ${allEntries.length} time entries for all users`, 'INFO');
-  return allEntries;
+  // Flatten grouped entries: Reports API v3 returns rows with nested time_entries array
+  // Each row contains: user_id, project_id, task_id, tag_ids, description, billable, time_entries[]
+  // Each time_entry contains: id, start, stop, seconds, at
+  const flattenedEntries = [];
+
+  for (const row of allRows) {
+    // Check if this row has nested time_entries (grouped format)
+    if (row.time_entries && Array.isArray(row.time_entries)) {
+      // Flatten: create one entry per time_entry, copying row-level fields
+      for (const te of row.time_entries) {
+        flattenedEntries.push({
+          // From the individual time entry
+          id: te.id,
+          start: te.start,
+          stop: te.stop,
+          seconds: te.seconds,
+          at: te.at,
+          // From the row (shared across grouped entries)
+          user_id: row.user_id,
+          project_id: row.project_id,
+          task_id: row.task_id,
+          tag_ids: row.tag_ids || [],
+          description: row.description || '',
+          billable: row.billable || false
+        });
+      }
+    } else {
+      // Already flat format (or v9 API format) - use as-is
+      flattenedEntries.push(row);
+    }
+  }
+
+  logMessage(`Fetched ${allRows.length} rows, flattened to ${flattenedEntries.length} individual time entries`, 'INFO');
+  return flattenedEntries;
 }
 
 // ============================================================================
