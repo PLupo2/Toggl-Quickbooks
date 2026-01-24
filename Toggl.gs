@@ -871,15 +871,22 @@ function syncApprovedEntries() {
   const dateRange = getImportDateRange();
   logMessage(`Date range: ${dateRange.startDate} to ${dateRange.endDate}`, 'INFO');
 
+  // Build tag lookup to convert tag IDs to names
+  const tags = fetchTogglTags();
+  const tagLookup = {};
+  tags.forEach(t => {
+    tagLookup[t.id] = t.name;
+  });
+
   // Fetch all time entries in date range
   const allEntries = fetchTimeEntriesAllUsers(dateRange.startDate, dateRange.endDate);
   logMessage(`Fetched ${allEntries.length} total entries`, 'INFO');
 
   // Filter for entries with Approved tag but NOT Synced tag
   const entriesToSync = allEntries.filter(entry => {
-    const tags = entry.tags || [];
-    const hasApproved = tags.some(t => t.toLowerCase() === approvedTag.toLowerCase());
-    const hasSynced = tags.some(t => t.toLowerCase() === syncedTag.toLowerCase());
+    const entryTags = resolveEntryTags(entry, tagLookup);
+    const hasApproved = entryTags.some(t => t.toLowerCase() === approvedTag.toLowerCase());
+    const hasSynced = entryTags.some(t => t.toLowerCase() === syncedTag.toLowerCase());
     return hasApproved && !hasSynced;
   });
 
@@ -1043,6 +1050,28 @@ function logSyncResult(entry, qboId, status, error) {
 }
 
 /**
+ * Resolves tag names from an entry (handles both tag_ids and tags fields)
+ * @param {Object} entry - Time entry from Toggl API
+ * @param {Object} tagLookup - Tag ID -> name lookup map
+ * @returns {string[]} Array of tag names
+ */
+function resolveEntryTags(entry, tagLookup) {
+  // Reports API uses tag_ids (array of IDs), v9 API uses tags (array of names)
+  const rawTags = entry.tag_ids || entry.tags || [];
+
+  return rawTags.map(tag => {
+    if (typeof tag === 'number') {
+      // It's a tag ID, look it up
+      return tagLookup[tag] || String(tag);
+    } else if (typeof tag === 'string') {
+      // It's already a tag name
+      return tag;
+    }
+    return String(tag);
+  });
+}
+
+/**
  * Preview function: Shows entries that would be synced (have Approved but not Synced tag)
  */
 function previewApprovedEntries() {
@@ -1052,21 +1081,43 @@ function previewApprovedEntries() {
 
   showToast('Fetching entries to preview...');
 
+  // Build tag lookup to convert tag IDs to names
+  const tags = fetchTogglTags();
+  const tagLookup = {};
+  tags.forEach(t => {
+    tagLookup[t.id] = t.name;
+  });
+
   const allEntries = fetchTimeEntriesAllUsers(dateRange.startDate, dateRange.endDate);
 
+  logMessage(`Fetched ${allEntries.length} total entries, checking for "${approvedTag}" tag...`, 'INFO');
+
   const entriesToSync = allEntries.filter(entry => {
-    const tags = entry.tags || [];
-    const hasApproved = tags.some(t => t.toLowerCase() === approvedTag.toLowerCase());
-    const hasSynced = tags.some(t => t.toLowerCase() === syncedTag.toLowerCase());
+    const entryTags = resolveEntryTags(entry, tagLookup);
+    const hasApproved = entryTags.some(t => t.toLowerCase() === approvedTag.toLowerCase());
+    const hasSynced = entryTags.some(t => t.toLowerCase() === syncedTag.toLowerCase());
     return hasApproved && !hasSynced;
   });
 
   if (entriesToSync.length === 0) {
+    // Debug: show what tags were found in first few entries
+    let debugInfo = '';
+    if (allEntries.length > 0) {
+      const sampleEntries = allEntries.slice(0, 3);
+      debugInfo = '\n\nDebug - Sample entry tags found:\n';
+      sampleEntries.forEach((e, i) => {
+        const tags = resolveEntryTags(e, tagLookup);
+        debugInfo += `Entry ${i+1}: [${tags.join(', ')}]\n`;
+      });
+    }
+
     showAlert(
       `No entries found with "${approvedTag}" tag (and without "${syncedTag}" tag) in the date range ${dateRange.startDate} to ${dateRange.endDate}.\n\n` +
+      `Found ${allEntries.length} total entries in this date range.\n\n` +
       `To sync entries:\n` +
       `1. In Toggl Track, add the "${approvedTag}" tag to time entries you want to sync\n` +
-      `2. Run "Sync Approved Entries" again`,
+      `2. Run "Sync Approved Entries" again` +
+      debugInfo,
       'No Entries to Sync'
     );
     return;
