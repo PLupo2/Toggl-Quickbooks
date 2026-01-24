@@ -403,15 +403,25 @@ function fetchTogglProjects(activeOnly = true) {
   const workspaceId = getOrFetchWorkspaceId();
   logMessage('Fetching Toggl projects...', 'INFO');
 
-  let endpoint = `/workspaces/${workspaceId}/projects`;
   if (activeOnly) {
-    endpoint += '?active=true';
+    // Only active projects
+    const endpoint = `/workspaces/${workspaceId}/projects?active=true`;
+    const projects = togglApiV9(endpoint);
+    logMessage(`Fetched ${projects.length} active projects`, 'INFO');
+    return projects;
+  } else {
+    // Fetch BOTH active and archived projects
+    // Toggl API requires separate calls for active=true and active=false
+    const activeEndpoint = `/workspaces/${workspaceId}/projects?active=true`;
+    const archivedEndpoint = `/workspaces/${workspaceId}/projects?active=false`;
+
+    const activeProjects = togglApiV9(activeEndpoint);
+    const archivedProjects = togglApiV9(archivedEndpoint);
+
+    const allProjects = [...activeProjects, ...archivedProjects];
+    logMessage(`Fetched ${allProjects.length} projects (${activeProjects.length} active, ${archivedProjects.length} archived)`, 'INFO');
+    return allProjects;
   }
-
-  const projects = togglApiV9(endpoint);
-  logMessage(`Fetched ${projects.length} projects`, 'INFO');
-
-  return projects;
 }
 
 /**
