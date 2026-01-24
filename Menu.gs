@@ -79,6 +79,12 @@ function createMenu() {
         .addSeparator()
         .addItem('Ensure Tags Exist in Toggl', 'ensureWorkflowTagsExist')
         .addSeparator()
+        .addItem('Hide Master Sheets', 'hideAndOrganizeMasterSheets')
+        .addItem('Show Master Sheets', 'showAllMasterSheets')
+        .addSeparator()
+        .addItem('Apply Unmapped Row Highlighting', 'applyUnmappedRowHighlighting')
+        .addItem('Update Project Customer Mappings', 'updateProjectCustomerMappings')
+        .addSeparator()
         .addItem('Debug: Customer Hierarchy', 'debugCustomerHierarchy')
     )
 

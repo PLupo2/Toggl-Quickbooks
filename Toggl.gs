@@ -294,24 +294,32 @@ function fetchWorkspaces() {
 
 /**
  * Fetches all users in the workspace
+ * @param {boolean} [activeOnly=true] - Only return active users
  * @returns {Object[]} Array of user objects
  */
-function fetchTogglUsers() {
+function fetchTogglUsers(activeOnly = true) {
   const workspaceId = getOrFetchWorkspaceId();
   logMessage('Fetching Toggl workspace users...', 'INFO');
 
   const users = togglApiV9(`/workspaces/${workspaceId}/users`);
-  logMessage(`Fetched ${users.length} users`, 'INFO');
 
-  return users;
+  // Filter to active users only if requested
+  // Toggl API: inactive field is true for deactivated users
+  const filteredUsers = activeOnly
+    ? users.filter(u => !u.inactive && u.active !== false)
+    : users;
+
+  logMessage(`Fetched ${filteredUsers.length} active users (${users.length} total)`, 'INFO');
+
+  return filteredUsers;
 }
 
 /**
- * Gets users for mapping sheet
+ * Gets users for mapping sheet (active users only)
  * @returns {Array[]} Array of [id, name, email] rows
  */
 function getUsersForMapping() {
-  const users = fetchTogglUsers();
+  const users = fetchTogglUsers(true); // Only active users
   return users.map(u => [
     u.id,
     u.fullname || u.name || u.email,
@@ -338,15 +346,22 @@ function fetchTogglClients() {
 }
 
 /**
- * Gets clients for mapping sheet
- * @returns {Array[]} Array of [id, name] rows
+ * Gets clients for mapping sheet with creation date
+ * @returns {Array[]} Array of [id, name, createdAt] rows sorted by creation date (newest first)
  */
 function getClientsForMapping() {
   const clients = fetchTogglClients();
   return clients
     .filter(c => !c.archived)
-    .map(c => [c.id, c.name])
-    .sort((a, b) => a[1].localeCompare(b[1]));
+    .map(c => [c.id, c.name, c.at || c.created_at || ''])
+    .sort((a, b) => {
+      // Sort by creation date descending (newest first)
+      if (a[2] && b[2]) {
+        return new Date(b[2]) - new Date(a[2]);
+      }
+      // If no date, sort alphabetically
+      return a[1].localeCompare(b[1]);
+    });
 }
 
 // ============================================================================
@@ -374,8 +389,8 @@ function fetchTogglProjects(activeOnly = true) {
 }
 
 /**
- * Gets projects for mapping sheet with client info
- * @returns {Array[]} Array of [id, name, clientName] rows
+ * Gets projects for mapping sheet with client info and creation date
+ * @returns {Array[]} Array of [id, name, clientName, clientId, createdAt] rows sorted by creation date (newest first)
  */
 function getProjectsForMapping() {
   const projects = fetchTogglProjects(true);
@@ -390,8 +405,17 @@ function getProjectsForMapping() {
   return projects.map(p => [
     p.id,
     p.name,
-    p.client_id ? clientMap[p.client_id] || '' : ''
-  ]).sort((a, b) => a[1].localeCompare(b[1]));
+    p.client_id ? clientMap[p.client_id] || '' : '',
+    p.client_id || '',
+    p.at || p.created_at || ''
+  ]).sort((a, b) => {
+    // Sort by creation date descending (newest first)
+    if (a[4] && b[4]) {
+      return new Date(b[4]) - new Date(a[4]);
+    }
+    // If no date, sort alphabetically
+    return a[1].localeCompare(b[1]);
+  });
 }
 
 // ============================================================================
