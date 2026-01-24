@@ -437,10 +437,23 @@ function logMessage(message, level = 'INFO') {
  * @returns {Object} Object with startDate and endDate as YYYY-MM-DD strings
  */
 function getImportDateRange() {
-  let startDateStr = getConfigValue('START_DATE', '');
-  let endDateStr = getConfigValue('END_DATE', '');
+  let startDateValue = getConfigValue('START_DATE', '');
+  let endDateValue = getConfigValue('END_DATE', '');
 
-  // If START_DATE is blank, calculate from IMPORT_DAYS
+  let startDateStr = '';
+  let endDateStr = '';
+
+  // Handle START_DATE - could be a Date object, string, or empty
+  if (startDateValue) {
+    if (startDateValue instanceof Date) {
+      startDateStr = formatDate(startDateValue);
+    } else if (typeof startDateValue === 'string' && startDateValue.trim() !== '') {
+      // Ensure it's in YYYY-MM-DD format
+      startDateStr = formatDate(new Date(startDateValue));
+    }
+  }
+
+  // If START_DATE is still blank, calculate from IMPORT_DAYS
   if (!startDateStr) {
     const importDays = parseInt(getConfigValue('IMPORT_DAYS', CONFIG.DEFAULTS.IMPORT_DAYS), 10);
     const startDate = new Date();
@@ -448,10 +461,21 @@ function getImportDateRange() {
     startDateStr = formatDate(startDate);
   }
 
-  // If END_DATE is blank, use today
+  // Handle END_DATE - could be a Date object, string, or empty
+  if (endDateValue) {
+    if (endDateValue instanceof Date) {
+      endDateStr = formatDate(endDateValue);
+    } else if (typeof endDateValue === 'string' && endDateValue.trim() !== '') {
+      endDateStr = formatDate(new Date(endDateValue));
+    }
+  }
+
+  // If END_DATE is still blank, use today
   if (!endDateStr) {
     endDateStr = formatDate(new Date());
   }
+
+  logMessage(`Date range: ${startDateStr} to ${endDateStr}`, 'INFO');
 
   return {
     startDate: startDateStr,
