@@ -79,7 +79,7 @@ function createMenu() {
         .addSeparator()
         .addItem('Ensure Tags Exist in Toggl', 'ensureWorkflowTagsExist')
         .addSeparator()
-        .addItem('Debug: Raw Projects API Response', 'debugRawProjectsResponse')
+        .addItem('Debug: Customer Hierarchy', 'debugCustomerHierarchy')
     )
 
     .addSeparator()
@@ -627,10 +627,11 @@ function showHelp() {
         <h2>Required Mappings</h2>
         <ul>
           <li><strong>Users:</strong> Toggl Users -> QBO Employees (required)</li>
-          <li><strong>Projects/Clients:</strong> -> QBO Customers (required)</li>
-          <li><strong>Tasks:</strong> -> QBO Service Items (required)</li>
-          <li><strong>QBO Projects:</strong> Optional (requires QBO Plus/Advanced)</li>
+          <li><strong>Clients:</strong> Toggl Clients -> QBO Customers (required)</li>
+          <li><strong>Projects:</strong> Toggl Projects -> QBO Sub-Customers* (optional)</li>
+          <li><strong>Tasks:</strong> Toggl Tasks -> QBO Service Items (required)</li>
         </ul>
+        <p><em>*This system uses QBO Sub-Customers as "Projects". Top-level QBO Customers = Clients, Sub-Customers = Projects.</em></p>
       </div>
 
       <div class="section">

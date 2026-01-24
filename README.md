@@ -1,22 +1,24 @@
 # Toggl Track → QuickBooks Online Time Sync
 
-A Google Apps Script system that syncs time entries from Toggl Track to QuickBooks Online as TimeActivity records, with mapping management and approval workflow.
+A Google Apps Script system that syncs time entries from Toggl Track to QuickBooks Online as TimeActivity records, using a tag-based approval workflow.
 
 ## Features
 
 - **OAuth 2.0 Authentication**: Secure connection to QuickBooks Online with automatic token refresh
-- **Dual Import Support**: Import time entries for all workspace users (Reports API) or just the current user (v9 API)
-- **Smart Mapping System**: Map Toggl entities (users, clients, projects, tasks) to QBO entities (employees, customers, projects, service items)
-- **Approval Workflow**: Review and approve entries in Inbox before syncing
+- **Tag-Based Workflow**: Tag entries with "Approved" in Toggl, sync to QBO, automatically get "Synced" tag
+- **Smart Mapping System**: Map Toggl entities (users, clients, projects, tasks) to QBO entities (employees, customers, sub-customers, service items)
+- **Sub-Customers as Projects**: Uses QBO sub-customers to represent projects (no paid developer tier required)
 - **Validation**: Automatically flag entries missing required mappings
-- **Deduplication**: Prevent duplicate imports and syncs
+- **Deduplication**: Entries with "Synced" tag are skipped to prevent duplicates
 - **Name Resolution**: Display human-readable names everywhere (no raw IDs)
 - **Environment Support**: Works with both QBO Sandbox and Production
 
 ## Data Flow
 
 ```
-Toggl Track → Inbox (review/approve) → Queue → QuickBooks Online → Archive
+Toggl Track (tag "Approved") → Google Sheets (sync) → QuickBooks Online
+                              ↓
+              Toggl Track (auto-adds "Synced" tag)
 ```
 
 ## Requirements
@@ -38,14 +40,12 @@ Toggl Track → Inbox (review/approve) → Queue → QuickBooks Online → Archi
 1. Create a new Google Sheet
 2. Go to **Extensions > Apps Script**
 3. Delete the default `Code.gs` file
-4. Create 8 new script files and copy the contents:
+4. Create 6 new script files and copy the contents:
    - `Config.gs`
    - `Auth.gs`
    - `QuickBooks.gs`
    - `Toggl.gs`
    - `Mappings.gs`
-   - `Queue.gs`
-   - `Inbox.gs`
    - `Menu.gs`
 
 ### 2. Configure Script Properties
@@ -87,7 +87,7 @@ Go to **Project Settings > Script Properties** and add:
 ### 6. Refresh Data
 
 Go to **Refresh Data > Refresh All** to:
-- Pull QBO master lists (Customers, Employees, Service Items, Projects)
+- Pull QBO master lists (Customers, Employees, Service Items, Sub-Customers)
 - Pull Toggl mappings (Users, Clients, Projects, Tasks)
 - Wire dropdown menus
 
@@ -98,16 +98,41 @@ Edit the mapping sheets to link Toggl entities to QBO:
 | Mapping Sheet | Purpose |
 |--------------|---------|
 | `Mappings_Users` | Toggl Users → QBO Employees |
-| `Mappings_Clients` | Toggl Clients → QBO Customers |
-| `Mappings_Projects` | Toggl Projects → QBO Customers/Projects |
+| `Mappings_Clients` | Toggl Clients → QBO Customers (top-level) |
+| `Mappings_Projects` | Toggl Projects → QBO Customers + Sub-Customers (projects) |
 | `Mappings_Tasks_Services` | Toggl Tasks → QBO Service Items |
 
-### 8. Import and Sync
+### 8. Create Tags and Sync
 
-1. **Import from Toggl > Import All Users**
-2. Review entries in `Inbox_Approvals`
-3. Check the `Approved` column for entries to sync
-4. **Sync to QuickBooks > Run Full Sync**
+1. **Maintenance > Ensure Tags Exist in Toggl** (creates Approved/Synced tags)
+2. In Toggl Track, add the "Approved" tag to entries you want to sync
+3. **Sync Operations > Preview Approved Entries** (see what will sync)
+4. **Sync Operations > Sync Approved Entries** (sync to QBO)
+
+## Tag-Based Workflow
+
+This system uses Toggl tags to manage the sync workflow:
+
+1. **Track Time**: Enter time in Toggl Track as usual
+2. **Approve**: When entries are ready to sync, add the "Approved" tag in Toggl
+3. **Sync**: Run "Sync Approved Entries" from the Google Sheet menu
+4. **Done**: The script syncs to QBO and adds "Synced" tag back to Toggl
+
+Entries with the "Synced" tag are automatically skipped, preventing duplicates.
+
+## Sub-Customers as Projects
+
+Since the QBO Projects API requires a paid developer tier ($300/mo), this system uses a creative workaround:
+
+- **Top-level Customers** = Clients (used in `Mappings_Clients`)
+- **Sub-customers** = Projects (used in `Mappings_Projects`)
+
+To create a "project" in QBO:
+1. Go to QBO > Customers
+2. Create a new customer
+3. Check "Is sub-customer" and select the parent customer
+
+The `QBO_Projects_Master` sheet will list all sub-customers for mapping.
 
 ## Sheet Structure
 
@@ -116,29 +141,32 @@ Edit the mapping sheets to link Toggl entities to QBO:
 | Sheet | Purpose |
 |-------|---------|
 | `Config` | Key-value configuration storage |
-| `Inbox_Approvals` | Review imported entries (21 columns) |
-| `Queue` | Pending sync queue (16 columns) |
-| `Synced_Archive` | Successfully synced entries (13 columns) |
+| `Sync_Log` | History of synced entries |
 
 ### Mapping Sheets
 
 | Sheet | Columns |
 |-------|---------|
-| `Mappings_Clients` | Toggl Client ID/Name, QBO Customer ID/Name, Auto Matched, Last Updated |
-| `Mappings_Projects` | Toggl Project ID/Name, Client Name, QBO Customer/Project IDs and Names |
-| `Mappings_Users` | Toggl User ID/Name/Email, QBO Employee ID/Name, Auto Matched |
+| `Mappings_Clients` | Toggl Client ID/Name, QBO Customer ID/Name |
+| `Mappings_Projects` | Toggl Project ID/Name, Client Name, QBO Customer/Project (sub-customer) |
+| `Mappings_Users` | Toggl User ID/Name/Email, QBO Employee ID/Name |
 | `Mappings_Tasks_Services` | Toggl Task ID/Name, Project/Client Names, QBO Service Item ID/Name |
 
 ### QBO Master Lists
 
 | Sheet | Purpose |
 |-------|---------|
-| `QBO_Customers_Master` | Reference list of QBO Customers |
-| `QBO_Employees_Master` | Reference list of QBO Employees |
-| `QBO_Items_Service_Master` | Reference list of QBO Service Items |
-| `QBO_Projects_Master` | Reference list of QBO Projects |
+| `QBO_Customers_Master` | Top-level QBO Customers (clients) |
+| `QBO_Employees_Master` | QBO Employees |
+| `QBO_Items_Service_Master` | QBO Service Items |
+| `QBO_Projects_Master` | QBO Sub-customers (projects) |
 
 ## Menu Reference
+
+### Sync Operations
+- **Preview Approved Entries**: Show entries that will be synced
+- **Sync Approved Entries**: Sync tagged entries to QBO
+- **Show Sync Status**: Display sync statistics
 
 ### Setup
 - **Build All Sheets**: Create all required sheets
@@ -147,36 +175,25 @@ Edit the mapping sheets to link Toggl entities to QBO:
 - **Disconnect QuickBooks**: Clear OAuth tokens
 - **Show Connection Status**: Display QBO connection info
 - **Show Toggl Status**: Display Toggl connection info
+- **Check QBO Projects Availability**: Show sub-customer (project) count
 
 ### Refresh Data
 - **Refresh Toggl Mappings**: Pull users, clients, projects, tasks
-- **Refresh QBO Master Lists**: Pull customers, employees, items, projects
+- **Refresh QBO Master Lists**: Pull customers, employees, items, sub-customers
 - **Refresh All**: Refresh everything and wire dropdowns
 - **Wire Dropdowns**: Add data validation to mapping sheets
 
-### Import from Toggl
-- **Import All Users**: Import entries for all workspace users
-- **Import Current User Only**: Import entries for authenticated user
-- **Show Import Settings**: View/change import date range
-
-### Inbox
-- **Validate Entries**: Check all entries for required mappings
-- **Auto-Populate Mappings**: Fill QBO columns from existing mappings
-- **Approve All Entries**: Check all approval boxes
-- **Show Inbox Stats**: Display summary statistics
-- **Filter: Needs Review**: Show only entries with validation errors
-- **Clear Filters**: Remove all filters
-
-### Sync to QuickBooks
-- **Process Inbox → Queue**: Move approved entries to Queue
-- **Sync Queue → QBO**: Create TimeActivities in QBO
-- **Run Full Sync**: Process Inbox and Sync in one step
-- **Reset Failed Queue Entries**: Allow retry of failed entries
+### Settings
+- **Configure Date Range**: Set start/end dates or "last N days"
+- **Configure Tag Names**: Customize Approved/Synced tag names
+- **Show Current Settings**: View all current settings
 
 ### Maintenance
 - **Cleanup Orphaned Mappings**: Remove mappings for deleted Toggl entities
-- **View Sync Log**: Show sync status summary
-- **Clear Sync Log**: Reset last import/sync dates
+- **View Sync Log**: Show sync history
+- **Clear Sync Log**: Reset sync log
+- **Ensure Tags Exist in Toggl**: Create workflow tags
+- **Debug: Customer Hierarchy**: Show all customers and sub-customers
 
 ## Configuration Options
 
@@ -184,9 +201,11 @@ Edit the `Config` sheet to adjust:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `IMPORT_DAYS` | 30 | Number of days to import |
-| `BATCH_SIZE` | 50 | Entries per batch |
-| `AUTO_APPROVE` | FALSE | Auto-approve valid entries |
+| `IMPORT_DAYS` | 30 | Number of days to import (when no date range set) |
+| `START_DATE` | (empty) | Specific start date (YYYY-MM-DD) |
+| `END_DATE` | (empty) | Specific end date (YYYY-MM-DD) |
+| `APPROVED_TAG` | Approved | Tag name for entries ready to sync |
+| `SYNCED_TAG` | Synced | Tag name added after successful sync |
 | `SYNC_BILLABLE_ONLY` | FALSE | Only sync billable time |
 
 ## Validation Rules
@@ -197,8 +216,8 @@ Entries must have:
 3. **Service Item mapping** (required) - Task must map to QBO service item
 4. **Valid duration** - Must be greater than 0
 5. **Valid date** - Must have a date
-
-QBO Projects are optional - entries can sync with just a Customer.
+6. **Approved tag** - Must have the "Approved" tag in Toggl
+7. **No Synced tag** - Must NOT have the "Synced" tag (prevents duplicates)
 
 ## Troubleshooting
 
@@ -216,18 +235,12 @@ QBO Projects are optional - entries can sync with just a Customer.
 - Re-authorize: **Setup > Connect to QuickBooks**
 - Tokens expire after 100 days if not used
 
-### Import Issues
-
-**"No entries imported"**
-- Check the import date range in **Import Settings**
-- Verify Toggl API token is correct
-- Ensure there are time entries in Toggl for the date range
-
-**"TOGGL_WORKSPACE_ID not found"**
-- The script will auto-detect it on first run
-- Or set it manually in Script Properties
-
 ### Sync Issues
+
+**"No entries found with Approved tag"**
+- Ensure entries have the "Approved" tag in Toggl
+- Check the date range in Settings
+- Run **Maintenance > Ensure Tags Exist in Toggl**
 
 **"Missing Employee mapping"**
 - Edit `Mappings_Users` to link the Toggl user to a QBO employee
@@ -245,22 +258,20 @@ QBO Projects are optional - entries can sync with just a Customer.
 - Check that the employee/customer/item exist in QBO
 - Refresh master lists and try again
 
-### Projects Unavailable
+### Projects (Sub-Customers)
 
-If QBO Projects aren't syncing:
-- Standard Intuit apps don't get the `project-management.project` scope
-- The script uses GraphQL as a fallback
-- If GraphQL fails, projects are optional - sync will work with just Customers
+**QBO_Projects_Master is empty**
+- Create sub-customers in QBO (Customer > Is sub-customer)
+- Run **Refresh Data > Refresh All**
+- Run **Maintenance > Debug: Customer Hierarchy** to verify
 
 ## Automated Triggers
 
-You can set up automated import/sync:
+You can set up automated syncing:
 
-```javascript
-// In Menu.gs, use setupAutomatedTriggers() to create:
-// - Daily import at 6 AM
-// - Daily sync at 7 AM
-```
+1. In Apps Script, go to **Triggers**
+2. Create a time-driven trigger for `syncApprovedEntries`
+3. Set to run daily at your preferred time
 
 ## API Reference
 
@@ -271,7 +282,6 @@ You can set up automated import/sync:
 ### QuickBooks Online
 - Sandbox: https://sandbox-quickbooks.api.intuit.com
 - Production: https://quickbooks.api.intuit.com
-- GraphQL: https://public.api.intuit.com/2020-04/graphql
 
 ## License
 

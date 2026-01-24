@@ -229,226 +229,157 @@ function getServiceItemsForMasterList() {
 }
 
 // ============================================================================
-// PROJECT OPERATIONS (GraphQL)
+// PROJECT OPERATIONS (Sub-Customers as Projects)
 // ============================================================================
 
 /**
- * Fetches projects using GraphQL API
- * Note: QBO Projects require QuickBooks Online Plus or Advanced subscription
- * and the project.readonly scope.
- * If projects return empty, it may be because:
- * 1. The QBO subscription doesn't include Projects
- * 2. No projects have been created in QBO
- * 3. The app doesn't have the required scope (need to re-authorize)
- * @returns {Object[]} Array of project objects with customer info
+ * Fetches sub-customers to use as "Projects"
+ *
+ * Since the GraphQL Projects API requires a paid developer tier ($300/mo),
+ * we use QBO sub-customers as a workaround for projects.
+ *
+ * Structure:
+ * - Top-level Customers (no ParentRef) → Used for Client mapping
+ * - Sub-customers (has ParentRef) → Used for Project mapping
+ *
+ * @returns {Object[]} Array of sub-customer objects with parent info
  */
 function fetchQBOProjects() {
-  logMessage('Fetching QBO projects via GraphQL...', 'INFO');
-  logMessage('Note: Projects require QBO Plus/Advanced subscription', 'INFO');
+  logMessage('Fetching QBO sub-customers as projects...', 'INFO');
 
   try {
-    const accessToken = getValidAccessToken();
-    const realmId = getQBORealm();
+    // Fetch ALL customers (including sub-customers)
+    const allCustomers = fetchQBOCustomers(true);
 
-    // GraphQL query - fetching ALL projects regardless of status first
-    const graphqlQuery = `
-      query projects {
-        company {
-          projects {
-            edges {
-              node {
-                id
-                name
-                status
-                description
-                customer {
-                  id
-                  displayName
-                }
-              }
-            }
-            pageInfo {
-              hasNextPage
-              hasPreviousPage
-            }
-          }
-        }
-      }
-    `;
-
-    logMessage('Making GraphQL request to fetch projects...', 'INFO');
-    logMessage(`Using realmId: ${realmId}`, 'INFO');
-
-    const response = UrlFetchApp.fetch('https://public.api.intuit.com/2020-04/graphql', {
-      method: 'post',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      payload: JSON.stringify({ query: graphqlQuery }),
-      muteHttpExceptions: true
+    // Build a lookup map for parent customers
+    const customerMap = {};
+    allCustomers.forEach(c => {
+      customerMap[c.Id] = c.DisplayName;
     });
 
-    const responseCode = response.getResponseCode();
-    const responseBody = response.getContentText();
+    // Filter to only sub-customers (those with ParentRef)
+    const subCustomers = allCustomers.filter(c => c.ParentRef && c.Active !== false);
 
-    logMessage(`GraphQL response code: ${responseCode}`, 'INFO');
-    logMessage(`GraphQL full response: ${responseBody}`, 'INFO');
+    logMessage(`Found ${subCustomers.length} sub-customers (projects)`, 'INFO');
 
-    if (responseCode !== 200) {
-      logMessage(`GraphQL projects fetch failed: ${responseCode} - ${responseBody}`, 'WARN');
-      logMessage('Projects may not be available. Did you re-authorize after adding project.readonly scope?', 'WARN');
-      return [];
-    }
-
-    const result = JSON.parse(responseBody);
-
-    if (result.errors) {
-      const errorMessages = result.errors.map(e => `${e.message} (${e.extensions?.code || 'no code'})`).join('; ');
-      logMessage(`GraphQL errors: ${errorMessages}`, 'WARN');
-      logMessage('Full error details: ' + JSON.stringify(result.errors), 'WARN');
-      return [];
-    }
-
-    // Log the full data structure for debugging
-    logMessage(`GraphQL data structure: ${JSON.stringify(result.data)}`, 'INFO');
-
-    const projectsEdges = result.data?.company?.projects?.edges || [];
-    logMessage(`Raw projects edges count: ${projectsEdges.length}`, 'INFO');
-
-    // Map ALL projects first, then log statuses
-    const allProjects = projectsEdges.map(edge => ({
-      id: edge.node.id,
-      name: edge.node.name,
-      status: edge.node.status,
-      customerId: edge.node.customer?.id || '',
-      customerName: edge.node.customer?.displayName || ''
+    // Map to project format with parent customer info
+    const projects = subCustomers.map(c => ({
+      id: c.Id,
+      name: c.DisplayName,
+      status: c.Active !== false ? 'ACTIVE' : 'INACTIVE',
+      customerId: c.ParentRef.value,
+      customerName: customerMap[c.ParentRef.value] || 'Unknown Customer'
     }));
 
-    // Log all statuses found
-    const statuses = [...new Set(allProjects.map(p => p.status))];
-    logMessage(`Project statuses found: ${statuses.join(', ') || 'none'}`, 'INFO');
-
-    // Return all projects (don't filter by status for now)
-    logMessage(`Returning ${allProjects.length} projects`, 'INFO');
-
-    return allProjects;
+    return projects;
   } catch (error) {
-    logMessage(`Error fetching projects: ${error.message}`, 'ERROR');
-    logMessage('Stack: ' + error.stack, 'ERROR');
+    logMessage(`Error fetching sub-customers as projects: ${error.message}`, 'ERROR');
     return [];
   }
 }
 
 /**
- * Shows detailed diagnostic information about QBO Projects availability
+ * Shows diagnostic information about sub-customers being used as Projects
  */
 function showProjectsInfo() {
-  showToast('Checking QBO Projects availability...');
+  showToast('Checking QBO sub-customers (projects)...');
 
   const projects = fetchQBOProjects();
 
   let message;
   if (projects.length > 0) {
-    message = `Found ${projects.length} QBO Projects:\n\n`;
+    message = `Found ${projects.length} sub-customers (projects):\n\n`;
     projects.slice(0, 10).forEach(p => {
-      message += `• ${p.name} (Status: ${p.status}, Customer: ${p.customerName || 'None'})\n`;
+      message += `• ${p.name} (Parent: ${p.customerName})\n`;
     });
     if (projects.length > 10) {
       message += `\n... and ${projects.length - 10} more`;
     }
-    message += '\n\nProjects are working correctly!';
+    message += '\n\nSub-customers are being used as Projects.';
   } else {
-    message = `No QBO Projects found.\n\n` +
-      `Troubleshooting steps:\n\n` +
-      `1. Check subscription: QBO Projects require Plus or Advanced plan\n\n` +
-      `2. Re-authorize: After we added the project.readonly scope, you need to:\n` +
-      `   • Run "Setup > Disconnect QuickBooks"\n` +
-      `   • Run "Setup > Connect to QuickBooks"\n` +
-      `   • Complete the OAuth flow again\n\n` +
-      `3. Create projects: Make sure you have at least one project created in QBO\n\n` +
-      `4. Check Apps Script Logs: View > Executions for detailed API responses\n\n` +
-      `5. Run "Raw Projects Debug" from Maintenance menu for full API response\n\n` +
-      `Note: QBO Projects are optional. You can sync time entries using Customers only.`;
+    message = `No sub-customers found.\n\n` +
+      `This system uses QBO sub-customers as "Projects":\n\n` +
+      `• Top-level Customers = Clients\n` +
+      `• Sub-customers = Projects\n\n` +
+      `To create projects:\n` +
+      `1. Go to QBO > Customers\n` +
+      `2. Create a new customer\n` +
+      `3. Check "Is sub-customer" and select the parent\n\n` +
+      `Projects are optional - you can sync using only Clients.`;
   }
 
-  showAlert(message, 'QBO Projects Status');
+  showAlert(message, 'QBO Projects (Sub-Customers)');
 }
 
 /**
- * Raw debug function to see exactly what the GraphQL API returns
+ * Debug function to show all customers and sub-customers
  */
-function debugRawProjectsResponse() {
-  showToast('Fetching raw GraphQL response...');
+function debugCustomerHierarchy() {
+  showToast('Fetching customer hierarchy...');
 
   try {
-    const accessToken = getValidAccessToken();
-    const realmId = getQBORealm();
+    const allCustomers = fetchQBOCustomers(true);
 
-    const graphqlQuery = `
-      query projects {
-        company {
-          projects {
-            edges {
-              node {
-                id
-                name
-                status
-                description
-                customer {
-                  id
-                  displayName
-                }
-              }
-            }
-          }
-        }
-      }
-    `;
+    // Separate top-level and sub-customers
+    const topLevel = allCustomers.filter(c => !c.ParentRef);
+    const subCustomers = allCustomers.filter(c => c.ParentRef);
 
-    const response = UrlFetchApp.fetch('https://public.api.intuit.com/2020-04/graphql', {
-      method: 'post',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
-      },
-      payload: JSON.stringify({ query: graphqlQuery }),
-      muteHttpExceptions: true
+    // Build parent lookup
+    const parentMap = {};
+    allCustomers.forEach(c => {
+      parentMap[c.Id] = c.DisplayName;
     });
 
-    const responseCode = response.getResponseCode();
-    const responseBody = response.getContentText();
-
-    // Write to a debug sheet for full visibility
+    // Write to debug sheet
     const ss = getSpreadsheet();
-    let debugSheet = ss.getSheetByName('_Debug_Projects');
+    let debugSheet = ss.getSheetByName('_Debug_Customers');
     if (!debugSheet) {
-      debugSheet = ss.insertSheet('_Debug_Projects');
+      debugSheet = ss.insertSheet('_Debug_Customers');
     }
     debugSheet.clear();
 
-    debugSheet.getRange(1, 1).setValue('GraphQL Projects Debug');
+    // Header
+    debugSheet.getRange(1, 1).setValue('Customer Hierarchy Debug');
     debugSheet.getRange(2, 1).setValue('Timestamp:');
     debugSheet.getRange(2, 2).setValue(new Date().toISOString());
-    debugSheet.getRange(3, 1).setValue('Realm ID:');
-    debugSheet.getRange(3, 2).setValue(realmId || 'NOT SET');
-    debugSheet.getRange(4, 1).setValue('Response Code:');
-    debugSheet.getRange(4, 2).setValue(responseCode);
-    debugSheet.getRange(5, 1).setValue('Response Body:');
-    debugSheet.getRange(6, 1).setValue(responseBody);
+    debugSheet.getRange(3, 1).setValue('Total Customers:');
+    debugSheet.getRange(3, 2).setValue(allCustomers.length);
+    debugSheet.getRange(4, 1).setValue('Top-Level (Clients):');
+    debugSheet.getRange(4, 2).setValue(topLevel.length);
+    debugSheet.getRange(5, 1).setValue('Sub-Customers (Projects):');
+    debugSheet.getRange(5, 2).setValue(subCustomers.length);
 
-    // Make the response body cell wrap
-    debugSheet.getRange(6, 1).setWrap(true);
-    debugSheet.setColumnWidth(1, 800);
+    // Top-level customers section
+    debugSheet.getRange(7, 1).setValue('TOP-LEVEL CUSTOMERS (Clients)');
+    debugSheet.getRange(8, 1, 1, 3).setValues([['ID', 'Name', 'Active']]);
+    if (topLevel.length > 0) {
+      const topData = topLevel.map(c => [c.Id, c.DisplayName, c.Active !== false ? 'Yes' : 'No']);
+      debugSheet.getRange(9, 1, topData.length, 3).setValues(topData);
+    }
 
+    // Sub-customers section
+    const subStartRow = 9 + topLevel.length + 2;
+    debugSheet.getRange(subStartRow, 1).setValue('SUB-CUSTOMERS (Projects)');
+    debugSheet.getRange(subStartRow + 1, 1, 1, 4).setValues([['ID', 'Name', 'Parent Customer', 'Active']]);
+    if (subCustomers.length > 0) {
+      const subData = subCustomers.map(c => [
+        c.Id,
+        c.DisplayName,
+        parentMap[c.ParentRef.value] || c.ParentRef.value,
+        c.Active !== false ? 'Yes' : 'No'
+      ]);
+      debugSheet.getRange(subStartRow + 2, 1, subData.length, 4).setValues(subData);
+    }
+
+    debugSheet.autoResizeColumns(1, 4);
     debugSheet.activate();
 
     showAlert(
-      `Debug info written to "_Debug_Projects" sheet.\n\n` +
-      `Response Code: ${responseCode}\n\n` +
-      `Check the sheet for the full API response.`,
-      'Projects Debug'
+      `Customer hierarchy written to "_Debug_Customers" sheet.\n\n` +
+      `Top-Level Customers (Clients): ${topLevel.length}\n` +
+      `Sub-Customers (Projects): ${subCustomers.length}\n\n` +
+      `Check the sheet for full details.`,
+      'Customer Hierarchy'
     );
   } catch (error) {
     showAlert(`Debug failed: ${error.message}`, 'Error');
@@ -472,6 +403,12 @@ function getProjectsForMasterList() {
 
 /**
  * Creates a TimeActivity record in QBO
+ *
+ * Note on Customer/Project handling:
+ * Since we use sub-customers as "projects", the CustomerRef should contain:
+ * - The sub-customer ID if a project is mapped (sub-customer = project)
+ * - The top-level customer ID if only a client is mapped (no project)
+ *
  * @param {Object} timeData - Time entry data
  * @returns {Object} Created TimeActivity
  */
@@ -483,13 +420,18 @@ function createTimeActivity(timeData) {
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
 
+  // Determine which customer ID to use
+  // If projectId is set, it's a sub-customer ID and takes precedence
+  // Otherwise, use the regular customerId (top-level customer)
+  const customerIdToUse = timeData.projectId || timeData.customerId;
+
   const payload = {
     NameOf: 'Employee',
     EmployeeRef: {
       value: String(timeData.employeeId)
     },
     CustomerRef: {
-      value: String(timeData.customerId)
+      value: String(customerIdToUse)
     },
     ItemRef: {
       value: String(timeData.serviceItemId)
@@ -501,13 +443,8 @@ function createTimeActivity(timeData) {
     BillableStatus: timeData.billable ? 'Billable' : 'NotBillable'
   };
 
-  // Add project if specified
-  if (timeData.projectId) {
-    // Projects in QBO are handled via ProjectRef
-    payload.ProjectRef = {
-      value: String(timeData.projectId)
-    };
-  }
+  // Note: We do NOT use ProjectRef since we're using sub-customers as projects
+  // The sub-customer ID goes directly into CustomerRef
 
   const response = qboRequest('timeactivity', {
     method: 'post',
