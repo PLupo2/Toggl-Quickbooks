@@ -86,6 +86,7 @@ function createMenu() {
         .addItem('Update Project Customer Mappings', 'updateProjectCustomerMappings')
         .addSeparator()
         .addItem('Debug: Customer Hierarchy', 'debugCustomerHierarchy')
+        .addItem('Debug: Test Toggl Functions', 'testTogglFunctions')
     )
 
     .addSeparator()

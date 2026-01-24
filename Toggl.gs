@@ -3,6 +3,32 @@
  * Supports both API v9 (current user) and Reports API v3 (all workspace users)
  */
 
+/**
+ * Diagnostic function to verify Toggl.gs is loaded correctly
+ * Run this from Apps Script to test if functions are available
+ */
+function testTogglFunctions() {
+  const functions = [
+    'getUsersForMapping',
+    'getClientsForMapping',
+    'getProjectsForMapping',
+    'getTasksForMapping',
+    'fetchTogglUsers',
+    'fetchTogglClients',
+    'fetchTogglProjects'
+  ];
+
+  let message = 'Toggl.gs Function Check:\n\n';
+
+  for (const fn of functions) {
+    const exists = typeof this[fn] === 'function';
+    message += `${fn}: ${exists ? '✓ OK' : '✗ MISSING'}\n`;
+  }
+
+  SpreadsheetApp.getUi().alert('Function Check', message, SpreadsheetApp.getUi().ButtonSet.OK);
+  return message;
+}
+
 // ============================================================================
 // API CONFIGURATION
 // ============================================================================
