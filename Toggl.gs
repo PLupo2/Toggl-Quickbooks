@@ -96,6 +96,55 @@ function togglReportsV3(endpoint, payload) {
 }
 
 // ============================================================================
+// DURATION HELPERS
+// ============================================================================
+
+/**
+ * Extracts duration in seconds from a time entry object
+ * Handles multiple API formats:
+ * - Track API v9: 'duration' in seconds
+ * - Reports API v3: 'seconds' in seconds
+ * - Reports API v2 (legacy): 'dur' in milliseconds
+ * @param {Object} entry - Time entry object from any Toggl API
+ * @returns {number} Duration in seconds
+ */
+function extractDurationSeconds(entry) {
+  if (!entry) return 0;
+
+  // Check for 'seconds' field first (Reports API v3)
+  if (typeof entry.seconds === 'number' && entry.seconds >= 0) {
+    return entry.seconds;
+  }
+
+  // Check for 'duration' field (Track API v9) - in seconds
+  if (typeof entry.duration === 'number') {
+    // Running timers have negative duration (negative Unix start time)
+    if (entry.duration < 0 && entry.start) {
+      const start = new Date(entry.start);
+      return Math.floor((new Date() - start) / 1000);
+    }
+    return entry.duration;
+  }
+
+  // Check for 'dur' field (Reports API v2 legacy) - in milliseconds
+  if (typeof entry.dur === 'number' && entry.dur > 0) {
+    return Math.floor(entry.dur / 1000);
+  }
+
+  // Try to calculate from start/stop if available
+  if (entry.start && entry.stop) {
+    const start = new Date(entry.start);
+    const stop = new Date(entry.stop);
+    const diffMs = stop - start;
+    if (diffMs > 0) {
+      return Math.floor(diffMs / 1000);
+    }
+  }
+
+  return 0;
+}
+
+// ============================================================================
 // TAG OPERATIONS
 // ============================================================================
 
@@ -501,7 +550,7 @@ function fetchTimeEntriesAllUsers(startDate, endDate) {
 
   // Flatten grouped entries: Reports API v3 returns rows with nested time_entries array
   // Each row contains: user_id, project_id, task_id, tag_ids, description, billable, time_entries[]
-  // Each time_entry contains: id, start, stop, seconds, at
+  // Each time_entry contains: id, start, stop, seconds (or duration), at
   const flattenedEntries = [];
 
   for (const row of allRows) {
@@ -509,12 +558,16 @@ function fetchTimeEntriesAllUsers(startDate, endDate) {
     if (row.time_entries && Array.isArray(row.time_entries)) {
       // Flatten: create one entry per time_entry, copying row-level fields
       for (const te of row.time_entries) {
+        // Extract duration - Reports API v3 may use 'seconds', v2 used 'dur' (milliseconds)
+        // Track API v9 uses 'duration' (seconds)
+        const durationSeconds = extractDurationSeconds(te);
+
         flattenedEntries.push({
           // From the individual time entry
           id: te.id,
           start: te.start,
           stop: te.stop,
-          seconds: te.seconds,
+          seconds: durationSeconds,
           at: te.at,
           // From the row (shared across grouped entries)
           user_id: row.user_id,
@@ -527,6 +580,10 @@ function fetchTimeEntriesAllUsers(startDate, endDate) {
       }
     } else {
       // Already flat format (or v9 API format) - use as-is
+      // Normalize duration to 'seconds' field for consistency
+      if (!row.seconds && (row.duration || row.dur)) {
+        row.seconds = extractDurationSeconds(row);
+      }
       flattenedEntries.push(row);
     }
   }
@@ -743,13 +800,8 @@ function processTimeEntry(entry, lookups) {
   const projectId = entry.project_id || entry.pid;
   const taskId = entry.task_id || entry.tid;
 
-  // Duration handling
-  let durationSeconds = entry.duration || entry.seconds || 0;
-  if (durationSeconds < 0) {
-    // Running timer - calculate from start
-    const start = new Date(entry.start);
-    durationSeconds = Math.floor((new Date() - start) / 1000);
-  }
+  // Duration handling - use helper that handles multiple API formats
+  const durationSeconds = extractDurationSeconds(entry);
 
   // Get project and client info
   const projectInfo = projectId ? lookups.projects[projectId] : null;
@@ -1167,8 +1219,9 @@ function previewApprovedEntries() {
     const userName = togglLookups.users[userId] || 'Unknown';
     const projectId = entry.project_id || entry.pid;
     const projectName = projectId ? togglLookups.projects[projectId]?.name || 'Unknown' : '(no project)';
-    const duration = formatDuration(entry.duration || entry.seconds || 0);
-    const date = formatDate(entry.start);
+    const durationSecs = extractDurationSeconds(entry);
+    const duration = formatDuration(durationSecs);
+    const date = entry.start ? formatDate(entry.start) : '(no date)';
 
     summary += `• ${date} - ${userName} - ${projectName} (${duration})\n`;
   });
