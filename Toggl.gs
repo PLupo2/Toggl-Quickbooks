@@ -81,7 +81,15 @@ function togglReportsV3(endpoint, payload) {
 
   if (responseCode !== 200) {
     logMessage(`Toggl Reports API Error: ${responseCode} - ${responseBody}`, 'ERROR');
-    throw new Error(`Toggl Reports API Error: ${responseCode}`);
+    // Include the actual error message from Toggl for debugging
+    let errorDetail = responseBody;
+    try {
+      const errorJson = JSON.parse(responseBody);
+      errorDetail = errorJson.message || errorJson.error || responseBody;
+    } catch (e) {
+      // Use raw response if not JSON
+    }
+    throw new Error(`Toggl Reports API Error: ${responseCode} - ${errorDetail}`);
   }
 
   return JSON.parse(responseBody);
@@ -466,11 +474,11 @@ function fetchTimeEntriesAllUsers(startDate, endDate) {
   const pageSize = 50;
 
   while (hasMore) {
+    // Don't include user_ids at all to get all users
+    // The API interprets omitted user_ids as "all users"
     const payload = {
       start_date: startDate,
       end_date: endDate,
-      // IMPORTANT: Use null for all users, not empty array
-      user_ids: null,
       first_row_number: firstRowNumber,
       page_size: pageSize
     };
