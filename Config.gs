@@ -84,8 +84,7 @@ const CONFIG = {
     ],
     MAPPINGS_PROJECTS: [
       'Toggl Project ID', 'Toggl Project Name', 'Toggl Client Name',
-      'QBO Customer ID', 'QBO Customer Name', 'QBO Project ID',
-      'QBO Project Name', 'Last Updated'
+      'QBO Project ID', 'QBO Project Name', 'Last Updated'
     ],
     MAPPINGS_USERS: [
       'Toggl User ID', 'Toggl User Name', 'Toggl Email',

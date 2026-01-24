@@ -222,6 +222,8 @@ function refreshClientMappings() {
 
 /**
  * Smart refresh of Project mappings
+ * Simplified structure: Toggl Project -> QBO Project (sub-customer) only
+ * Customer mapping is handled in Mappings_Clients
  */
 function refreshProjectMappings() {
   logMessage('Refreshing Project mappings...', 'INFO');
@@ -238,14 +240,13 @@ function refreshProjectMappings() {
       continue;
     }
 
+    // Simplified: only Project mapping, no Customer columns
     newRows.push([
       projectId,
       projectName,
       clientName,
-      '', // QBO Customer ID
-      '', // QBO Customer Name
-      '', // QBO Project ID
-      '', // QBO Project Name
+      '', // QBO Project ID (sub-customer)
+      '', // QBO Project Name (sub-customer)
       timestamp
     ]);
   }
@@ -431,8 +432,12 @@ function tryAutoMatchServiceItem(taskName) {
 // DROPDOWN WIRING
 // ============================================================================
 
+// Max rows to apply dropdown validation to (accommodates future growth)
+const DROPDOWN_MAX_ROWS = 500;
+
 /**
  * Wires dropdown data validation to all mapping sheets
+ * Uses open-ended ranges from master sheets so new items are automatically included
  */
 function wireAllDropdowns() {
   showToast('Wiring dropdowns to mapping sheets...');
@@ -451,6 +456,25 @@ function wireAllDropdowns() {
 }
 
 /**
+ * Creates a data validation rule from a master sheet column
+ * Uses a large range to accommodate future additions
+ * @param {Sheet} masterSheet - The master data sheet
+ * @param {number} column - Column number (1-based)
+ * @returns {DataValidation|null} Data validation rule or null
+ */
+function createDropdownRule(masterSheet, column) {
+  if (!masterSheet) return null;
+
+  // Use a large range (1000 rows) to accommodate future additions
+  // Empty cells in the range are ignored by the dropdown
+  const range = masterSheet.getRange(2, column, 1000, 1);
+  return SpreadsheetApp.newDataValidation()
+    .requireValueInRange(range, true)
+    .setAllowInvalid(true)
+    .build();
+}
+
+/**
  * Wires dropdowns for User mappings
  * Note: ID/Name auto-population is handled by onEdit trigger when values change
  */
@@ -461,28 +485,17 @@ function wireUserMappingDropdowns() {
 
   if (!sheet || !employeesSheet) return;
 
-  const dataRows = sheet.getLastRow() - 1;
-  if (dataRows < 1) return;
+  const rule = createDropdownRule(employeesSheet, 2); // Column B = names
+  if (!rule) return;
 
-  // Create dropdown from QBO Employee names (column B of master)
-  const employeeCount = employeesSheet.getLastRow() - 1;
-  if (employeeCount < 1) return;
-
-  const range = employeesSheet.getRange(2, 2, employeeCount, 1);
-  const rule = SpreadsheetApp.newDataValidation()
-    .requireValueInRange(range, true)
-    .setAllowInvalid(true)
-    .build();
-
-  // Apply to QBO Employee Name column (E)
-  sheet.getRange(2, 5, dataRows, 1).setDataValidation(rule);
-  // ID column (D) will auto-populate via onEdit trigger when name is selected
+  // Apply to QBO Employee Name column (E) for many rows to accommodate future data
+  sheet.getRange(2, 5, DROPDOWN_MAX_ROWS, 1).setDataValidation(rule);
+  logMessage('User mapping dropdowns wired', 'INFO');
 }
 
 /**
  * Wires dropdowns for Client mappings
- * Toggl Clients map to QBO Customers only (top-level, not sub-customers or projects)
- * Note: ID/Name auto-population is handled by onEdit trigger when values change
+ * Toggl Clients map to QBO Customers (top-level only, not sub-customers)
  */
 function wireClientMappingDropdowns() {
   const ss = getSpreadsheet();
@@ -491,79 +504,41 @@ function wireClientMappingDropdowns() {
 
   if (!sheet || !customersSheet) return;
 
-  const dataRows = sheet.getLastRow() - 1;
-  if (dataRows < 1) return;
+  const rule = createDropdownRule(customersSheet, 2); // Column B = names
+  if (!rule) return;
 
-  const customerCount = customersSheet.getLastRow() - 1;
-  if (customerCount < 1) return;
-
-  // QBO_Customers_Master now only contains top-level customers (sub-customers excluded)
-  const range = customersSheet.getRange(2, 2, customerCount, 1);
-  const rule = SpreadsheetApp.newDataValidation()
-    .requireValueInRange(range, true)
-    .setAllowInvalid(true)
-    .build();
-
-  // Apply to QBO Customer Name column (D)
-  sheet.getRange(2, 4, dataRows, 1).setDataValidation(rule);
-  // ID column (C) will auto-populate via onEdit trigger when name is selected
+  // Apply to QBO Customer Name column (D) for many rows
+  sheet.getRange(2, 4, DROPDOWN_MAX_ROWS, 1).setDataValidation(rule);
+  logMessage('Client mapping dropdowns wired', 'INFO');
 }
 
 /**
  * Wires dropdowns for Project mappings
- * Toggl Projects can map to:
- *   - QBO Customer (required) - from QBO_Customers_Master
- *   - QBO Project (optional) - from QBO_Projects_Master (separate from sub-customers)
- * Note: ID/Name auto-population is handled by onEdit trigger when values change
+ * Toggl Projects map to QBO Projects (sub-customers) ONLY
+ * Customer mapping is handled separately in Mappings_Clients
  */
 function wireProjectMappingDropdowns() {
   const ss = getSpreadsheet();
   const sheet = ss.getSheetByName(CONFIG.SHEETS.MAPPINGS_PROJECTS);
-  const customersSheet = ss.getSheetByName(CONFIG.SHEETS.QBO_CUSTOMERS);
   const projectsSheet = ss.getSheetByName(CONFIG.SHEETS.QBO_PROJECTS);
 
-  if (!sheet || !customersSheet) return;
+  if (!sheet) return;
 
-  const dataRows = sheet.getLastRow() - 1;
-  if (dataRows < 1) return;
-
-  // QBO Customer dropdown (from QBO_Customers_Master - top-level customers only)
-  const customerCount = customersSheet.getLastRow() - 1;
-  if (customerCount >= 1) {
-    const customerRange = customersSheet.getRange(2, 2, customerCount, 1);
-    const customerRule = SpreadsheetApp.newDataValidation()
-      .requireValueInRange(customerRange, true)
-      .setAllowInvalid(true)
-      .build();
-
-    // QBO Customer Name column (E)
-    sheet.getRange(2, 5, dataRows, 1).setDataValidation(customerRule);
-    // Customer ID column (D) will auto-populate via onEdit trigger
-  }
-
-  // QBO Project dropdown (from QBO_Projects_Master - actual QBO Projects, NOT sub-customers)
-  // This is optional - only available for QBO Plus/Advanced subscriptions
-  if (projectsSheet && projectsSheet.getLastRow() > 1) {
-    const projectCount = projectsSheet.getLastRow() - 1;
-    // QBO_Projects_Master column B has project names
-    const projectRange = projectsSheet.getRange(2, 2, projectCount, 1);
-    const projectRule = SpreadsheetApp.newDataValidation()
-      .requireValueInRange(projectRange, true)
-      .setAllowInvalid(true)
-      .build();
-
-    // QBO Project Name column (G)
-    sheet.getRange(2, 7, dataRows, 1).setDataValidation(projectRule);
-    // Project ID column (F) will auto-populate via onEdit trigger
+  // QBO Project dropdown (from QBO_Projects_Master - sub-customers as projects)
+  if (projectsSheet) {
+    const projectRule = createDropdownRule(projectsSheet, 2); // Column B = project names
+    if (projectRule) {
+      // QBO Project Name column (E) - simplified structure without Customer columns
+      sheet.getRange(2, 5, DROPDOWN_MAX_ROWS, 1).setDataValidation(projectRule);
+      logMessage('Project mapping dropdowns wired', 'INFO');
+    }
   } else {
-    // Clear any existing project dropdowns if no projects available
-    sheet.getRange(2, 7, dataRows, 1).clearDataValidations();
+    logMessage('No QBO_Projects_Master sheet found - project dropdowns not wired', 'WARN');
   }
 }
 
 /**
  * Wires dropdowns for Task/Service mappings
- * Note: ID/Name auto-population is handled by onEdit trigger when values change
  */
 function wireTaskMappingDropdowns() {
   const ss = getSpreadsheet();
@@ -572,21 +547,12 @@ function wireTaskMappingDropdowns() {
 
   if (!sheet || !itemsSheet) return;
 
-  const dataRows = sheet.getLastRow() - 1;
-  if (dataRows < 1) return;
+  const rule = createDropdownRule(itemsSheet, 2); // Column B = names
+  if (!rule) return;
 
-  const itemCount = itemsSheet.getLastRow() - 1;
-  if (itemCount < 1) return;
-
-  const range = itemsSheet.getRange(2, 2, itemCount, 1);
-  const rule = SpreadsheetApp.newDataValidation()
-    .requireValueInRange(range, true)
-    .setAllowInvalid(true)
-    .build();
-
-  // QBO Service Item Name column (F)
-  sheet.getRange(2, 6, dataRows, 1).setDataValidation(rule);
-  // Service Item ID column (E) will auto-populate via onEdit trigger
+  // QBO Service Item Name column (F) for many rows
+  sheet.getRange(2, 6, DROPDOWN_MAX_ROWS, 1).setDataValidation(rule);
+  logMessage('Task mapping dropdowns wired', 'INFO');
 }
 
 // ============================================================================
@@ -602,7 +568,7 @@ function buildMappingLookups() {
   const mappings = {
     users: {},      // togglUserId -> { qboEmployeeId, qboEmployeeName }
     clients: {},    // togglClientId -> { qboCustomerId, qboCustomerName }
-    projects: {},   // togglProjectId -> { qboCustomerId, qboCustomerName, qboProjectId, qboProjectName }
+    projects: {},   // togglProjectId -> { qboProjectId, qboProjectName } (sub-customer)
     tasks: {}       // togglTaskId -> { qboServiceItemId, qboServiceItemName }
   };
 
@@ -634,17 +600,17 @@ function buildMappingLookups() {
     });
   }
 
-  // Project mappings
+  // Project mappings (simplified: Toggl Project -> QBO Sub-Customer as Project)
+  // New structure: col 1=Toggl ID, 2=Toggl Name, 3=Client Name, 4=QBO Project ID, 5=QBO Project Name
   const projectsSheet = ss.getSheetByName(CONFIG.SHEETS.MAPPINGS_PROJECTS);
   if (projectsSheet && projectsSheet.getLastRow() > 1) {
-    const data = projectsSheet.getRange(2, 1, projectsSheet.getLastRow() - 1, 7).getValues();
+    const data = projectsSheet.getRange(2, 1, projectsSheet.getLastRow() - 1, 5).getValues();
     data.forEach(row => {
       if (row[0]) { // Has Toggl Project ID
         mappings.projects[String(row[0])] = {
-          qboCustomerId: row[3] ? String(row[3]) : '',
-          qboCustomerName: row[4] || '',
-          qboProjectId: row[5] ? String(row[5]) : '',
-          qboProjectName: row[6] || ''
+          // No separate customer mapping - get customer from Mappings_Clients via client name
+          qboProjectId: row[3] ? String(row[3]) : '',  // Sub-customer ID
+          qboProjectName: row[4] || ''                  // Sub-customer Name
         };
       }
     });
@@ -861,50 +827,29 @@ function handleClientMappingEdit(sheet, row, col, value) {
 
 /**
  * Handles edits in Project mappings sheet
- * Columns: 1=Toggl ID, 2=Toggl Name, 3=Client, 4=QBO Cust ID, 5=QBO Cust Name, 6=QBO Proj ID, 7=QBO Proj Name, 8=Updated
+ * Simplified columns: 1=Toggl ID, 2=Toggl Name, 3=Client, 4=QBO Project ID, 5=QBO Project Name, 6=Updated
+ * (No separate Customer columns - Customer mapping is in Mappings_Clients)
  */
 function handleProjectMappingEdit(sheet, row, col, value) {
   const ss = getSpreadsheet();
 
-  // Customer lookup
+  // Project lookup (sub-customer) - columns 4 and 5
   if (col === 4 || col === 5) {
-    const customerSheet = ss.getSheetByName(CONFIG.SHEETS.QBO_CUSTOMERS);
-    if (customerSheet && customerSheet.getLastRow() > 1) {
-      const customerData = customerSheet.getRange(2, 1, customerSheet.getLastRow() - 1, 2).getValues();
-
-      if (col === 5 && value) {
-        // QBO Customer Name edited - find and set QBO Customer ID
-        const match = customerData.find(r => r[1] === value);
-        if (match) {
-          sheet.getRange(row, 4).setValue(match[0]);
-        }
-      } else if (col === 4 && value) {
-        // QBO Customer ID edited - find and set QBO Customer Name
-        const match = customerData.find(r => String(r[0]) === String(value));
-        if (match) {
-          sheet.getRange(row, 5).setValue(match[1]);
-        }
-      }
-    }
-  }
-
-  // Project lookup
-  if (col === 6 || col === 7) {
     const projectSheet = ss.getSheetByName(CONFIG.SHEETS.QBO_PROJECTS);
     if (projectSheet && projectSheet.getLastRow() > 1) {
       const projectData = projectSheet.getRange(2, 1, projectSheet.getLastRow() - 1, 2).getValues();
 
-      if (col === 7 && value) {
+      if (col === 5 && value) {
         // QBO Project Name edited - find and set QBO Project ID
         const match = projectData.find(r => r[1] === value);
         if (match) {
-          sheet.getRange(row, 6).setValue(match[0]);
+          sheet.getRange(row, 4).setValue(match[0]);
         }
-      } else if (col === 6 && value) {
+      } else if (col === 4 && value) {
         // QBO Project ID edited - find and set QBO Project Name
         const match = projectData.find(r => String(r[0]) === String(value));
         if (match) {
-          sheet.getRange(row, 7).setValue(match[1]);
+          sheet.getRange(row, 5).setValue(match[1]);
         }
       }
     }

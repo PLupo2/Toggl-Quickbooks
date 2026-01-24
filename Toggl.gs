@@ -961,24 +961,30 @@ function syncSingleEntry(entry, mappings) {
     return { success: false, error: `No QBO employee mapping for Toggl user: ${entry.togglUser}` };
   }
 
-  // Customer comes from project mapping first, then client mapping
-  let customerId = qboProject?.qboCustomerId || qboClient?.qboCustomerId;
+  // Customer comes from Mappings_Clients (via client ID)
+  // Note: Projects no longer have customer mapping - they only map to sub-customers
+  const customerId = qboClient?.qboCustomerId;
   if (!customerId) {
-    return { success: false, error: `No QBO customer mapping for: ${entry.togglClient || entry.togglProject}` };
+    return { success: false, error: `No QBO customer mapping for client: ${entry.togglClient || '(no client)'}` };
   }
 
-  // Service item from task mapping (optional)
+  // Project (sub-customer) is optional - from Mappings_Projects
+  // If set, the sub-customer ID will be used instead of the customer ID for the TimeActivity
+  const projectId = qboProject?.qboProjectId || '';
+
+  // Service item from task mapping (required)
   const serviceItemId = qboTask?.qboServiceItemId;
   if (!serviceItemId) {
     return { success: false, error: `No QBO service item mapping for task: ${entry.togglTask || '(no task)'}` };
   }
 
   // Build time data for QBO
+  // Note: If projectId is set (sub-customer), it takes precedence in createTimeActivity
   const timeData = {
     togglEntryId: entry.togglEntryId,
     employeeId: qboEmployee.qboEmployeeId,
-    customerId: customerId,
-    projectId: qboProject?.qboProjectId || '',  // Optional
+    customerId: customerId,            // Top-level customer from Mappings_Clients
+    projectId: projectId,              // Sub-customer from Mappings_Projects (optional)
     serviceItemId: serviceItemId,
     date: entry.date,
     hours: entry.durationSeconds / 3600,  // Convert seconds to hours
