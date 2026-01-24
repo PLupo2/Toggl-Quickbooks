@@ -222,6 +222,7 @@ function ensureTagExists(tagName) {
 
 /**
  * Adds a tag to a time entry
+ * Uses workspace endpoint with tag_action:'add' to work with any user's entries
  * @param {number} entryId - Time entry ID
  * @param {string} tagName - Tag name to add
  * @returns {Object} Updated time entry
@@ -229,24 +230,16 @@ function ensureTagExists(tagName) {
 function addTagToTimeEntry(entryId, tagName) {
   const workspaceId = getOrFetchWorkspaceId();
 
-  // First, get the current entry to see its existing tags
-  const entry = togglApiV9(`/me/time_entries/${entryId}`);
-  const currentTags = entry.tags || [];
-
-  // Check if tag already exists on entry
-  if (currentTags.includes(tagName)) {
-    logMessage(`Entry ${entryId} already has tag "${tagName}"`, 'INFO');
-    return entry;
-  }
-
-  // Add the new tag
-  const updatedTags = [...currentTags, tagName];
-
   logMessage(`Adding tag "${tagName}" to entry ${entryId}`, 'INFO');
 
+  // Use workspace endpoint with tag_action:'add' to append tag without knowing existing tags
+  // This works for any user's entries in the workspace (not just current user)
   const updated = togglApiV9(`/workspaces/${workspaceId}/time_entries/${entryId}`, {
     method: 'put',
-    payload: JSON.stringify({ tags: updatedTags })
+    payload: JSON.stringify({
+      tags: [tagName],
+      tag_action: 'add'
+    })
   });
 
   return updated;
@@ -413,10 +406,21 @@ function fetchTogglProjects(activeOnly = true) {
     // Fetch BOTH active and archived projects
     // Toggl API requires separate calls for active=true and active=false
     const activeEndpoint = `/workspaces/${workspaceId}/projects?active=true`;
-    const archivedEndpoint = `/workspaces/${workspaceId}/projects?active=false`;
-
     const activeProjects = togglApiV9(activeEndpoint);
-    const archivedProjects = togglApiV9(archivedEndpoint);
+
+    // Try to fetch archived projects (requires paid Toggl plan)
+    let archivedProjects = [];
+    try {
+      const archivedEndpoint = `/workspaces/${workspaceId}/projects?active=false`;
+      archivedProjects = togglApiV9(archivedEndpoint);
+    } catch (e) {
+      // 402 = Payment Required - archived projects need paid plan
+      if (e.message.includes('402')) {
+        logMessage('Archived projects require paid Toggl plan - using active projects only', 'WARN');
+      } else {
+        logMessage(`Could not fetch archived projects: ${e.message}`, 'WARN');
+      }
+    }
 
     const allProjects = [...activeProjects, ...archivedProjects];
     logMessage(`Fetched ${allProjects.length} projects (${activeProjects.length} active, ${archivedProjects.length} archived)`, 'INFO');
@@ -1133,10 +1137,22 @@ function syncSingleEntry(entry, mappings) {
   // If set, the sub-customer ID will be used instead of the customer ID for the TimeActivity
   const projectId = qboProject?.qboProjectId || '';
 
-  // Service item from task mapping (required)
-  const serviceItemId = qboTask?.qboServiceItemId;
+  // Service item from task mapping, or fall back to default
+  let serviceItemId = qboTask?.qboServiceItemId;
+
+  // If no task mapping, use default service item from config
   if (!serviceItemId) {
-    return { success: false, error: `No QBO service item mapping for task: ${entry.togglTask || '(no task)'}` };
+    const defaultServiceItemId = getConfigValue('DEFAULT_SERVICE_ITEM_ID', '');
+    if (defaultServiceItemId) {
+      serviceItemId = defaultServiceItemId;
+      logMessage(`Using default service item for entry without task: ${entry.togglEntryId}`, 'INFO');
+    } else {
+      return {
+        success: false,
+        error: `No QBO service item mapping for task: ${entry.togglTask || '(no task)'}. ` +
+               `Set DEFAULT_SERVICE_ITEM_ID in Config sheet to use a default.`
+      };
+    }
   }
 
   // Build time data for QBO

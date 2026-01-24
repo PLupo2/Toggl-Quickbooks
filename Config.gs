@@ -287,7 +287,9 @@ function createConfigSheet(ss) {
     ['LAST_SYNC_DATE', ''],
     ['SYNC_BILLABLE_ONLY', 'FALSE'],
     ['APPROVED_TAG', CONFIG.TAGS.APPROVED],  // Tag name to look for in Toggl
-    ['SYNCED_TAG', CONFIG.TAGS.SYNCED]       // Tag name to add after sync
+    ['SYNCED_TAG', CONFIG.TAGS.SYNCED],      // Tag name to add after sync
+    ['DEFAULT_SERVICE_ITEM_ID', ''],         // QBO Service Item ID for entries without tasks
+    ['DEFAULT_SERVICE_ITEM_NAME', '']        // QBO Service Item Name (for reference)
   ];
 
   configSheet.getRange(2, 1, defaults.length, 2).setValues(defaults);
