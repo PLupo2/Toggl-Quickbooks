@@ -78,6 +78,8 @@ function createMenu() {
         .addItem('Clear Sync Log', 'clearSyncLog')
         .addSeparator()
         .addItem('Ensure Tags Exist in Toggl', 'ensureWorkflowTagsExist')
+        .addSeparator()
+        .addItem('Debug: Raw Projects API Response', 'debugRawProjectsResponse')
     )
 
     .addSeparator()
@@ -246,73 +248,122 @@ function refreshAll() {
 // ============================================================================
 
 /**
- * Configures the date range for sync
+ * Configures the date range for sync using an HTML dialog with date pickers
  */
 function configureDateRange() {
   const currentStart = getConfigValue('START_DATE', '');
   const currentEnd = getConfigValue('END_DATE', '');
   const currentDays = getConfigValue('IMPORT_DAYS', CONFIG.DEFAULTS.IMPORT_DAYS);
+  const effectiveRange = getImportDateRange();
 
-  const ui = SpreadsheetApp.getUi();
+  const html = HtmlService.createHtmlOutput(`
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        h3 { color: #1a73e8; margin-top: 0; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; color: #333; }
+        input[type="date"], input[type="number"] {
+          padding: 8px 12px;
+          border: 1px solid #ddd;
+          border-radius: 4px;
+          font-size: 14px;
+          width: 200px;
+        }
+        .help-text { font-size: 12px; color: #666; margin-top: 4px; }
+        .current { background: #f5f5f5; padding: 10px; border-radius: 4px; margin-bottom: 15px; font-size: 13px; }
+        .btn {
+          padding: 10px 20px;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 14px;
+          margin-right: 10px;
+        }
+        .btn-primary { background: #1a73e8; color: white; }
+        .btn-secondary { background: #f1f3f4; color: #333; }
+        .btn:hover { opacity: 0.9; }
+        .divider { border-top: 1px solid #eee; margin: 20px 0; padding-top: 15px; }
+      </style>
+    </head>
+    <body>
+      <h3>Configure Date Range</h3>
 
-  // Ask for start date
-  const startResponse = ui.prompt(
-    'Configure Date Range - Start Date',
-    `Current Start Date: ${currentStart || `(calculated: last ${currentDays} days)`}\n\n` +
-    `Enter start date (YYYY-MM-DD) or leave blank to use IMPORT_DAYS:`,
-    ui.ButtonSet.OK_CANCEL
-  );
+      <div class="current">
+        <strong>Current effective range:</strong> ${effectiveRange.startDate} to ${effectiveRange.endDate}
+      </div>
 
-  if (startResponse.getSelectedButton() !== ui.Button.OK) return;
+      <div class="form-group">
+        <label>Start Date</label>
+        <input type="date" id="startDate" value="${currentStart}">
+        <div class="help-text">Leave blank to use "Last N Days" instead</div>
+      </div>
 
-  const newStart = startResponse.getResponseText().trim();
-  if (newStart && !isValidDate(newStart)) {
-    showAlert('Invalid date format. Please use YYYY-MM-DD.', 'Invalid Input');
-    return;
-  }
-  setConfigValue('START_DATE', newStart);
+      <div class="form-group">
+        <label>End Date</label>
+        <input type="date" id="endDate" value="${currentEnd}">
+        <div class="help-text">Leave blank for today's date</div>
+      </div>
 
-  // Ask for end date
-  const endResponse = ui.prompt(
-    'Configure Date Range - End Date',
-    `Current End Date: ${currentEnd || '(today)'}\n\n` +
-    `Enter end date (YYYY-MM-DD) or leave blank for today:`,
-    ui.ButtonSet.OK_CANCEL
-  );
+      <div class="divider">
+        <div class="form-group">
+          <label>Or use: Last N Days</label>
+          <input type="number" id="importDays" value="${currentDays}" min="1" max="365">
+          <div class="help-text">Used when Start Date is blank (1-365 days)</div>
+        </div>
+      </div>
 
-  if (endResponse.getSelectedButton() !== ui.Button.OK) return;
+      <div style="margin-top: 20px;">
+        <button class="btn btn-primary" onclick="save()">Save</button>
+        <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
+        <button class="btn btn-secondary" onclick="clearDates()">Clear Dates</button>
+      </div>
 
-  const newEnd = endResponse.getResponseText().trim();
-  if (newEnd && !isValidDate(newEnd)) {
-    showAlert('Invalid date format. Please use YYYY-MM-DD.', 'Invalid Input');
-    return;
-  }
-  setConfigValue('END_DATE', newEnd);
+      <script>
+        function save() {
+          const startDate = document.getElementById('startDate').value;
+          const endDate = document.getElementById('endDate').value;
+          const importDays = document.getElementById('importDays').value;
 
-  // If start date is blank, ask for IMPORT_DAYS
-  if (!newStart) {
-    const daysResponse = ui.prompt(
-      'Configure Import Days',
-      `When START_DATE is blank, entries from the last N days are used.\n\n` +
-      `Current: ${currentDays} days\n\n` +
-      `Enter number of days (1-365):`,
-      ui.ButtonSet.OK_CANCEL
-    );
+          google.script.run
+            .withSuccessHandler(function() {
+              google.script.host.close();
+            })
+            .withFailureHandler(function(error) {
+              alert('Error: ' + error.message);
+            })
+            .saveDateRangeSettings(startDate, endDate, importDays);
+        }
 
-    if (daysResponse.getSelectedButton() === ui.Button.OK) {
-      const newDays = parseInt(daysResponse.getResponseText().trim(), 10);
-      if (!isNaN(newDays) && newDays > 0 && newDays <= 365) {
-        setConfigValue('IMPORT_DAYS', newDays);
-      }
-    }
+        function clearDates() {
+          document.getElementById('startDate').value = '';
+          document.getElementById('endDate').value = '';
+        }
+      </script>
+    </body>
+    </html>
+  `)
+    .setWidth(400)
+    .setHeight(420);
+
+  SpreadsheetApp.getUi().showModalDialog(html, 'Configure Date Range');
+}
+
+/**
+ * Saves date range settings (called from HTML dialog)
+ */
+function saveDateRangeSettings(startDate, endDate, importDays) {
+  setConfigValue('START_DATE', startDate || '');
+  setConfigValue('END_DATE', endDate || '');
+
+  const days = parseInt(importDays, 10);
+  if (!isNaN(days) && days > 0 && days <= 365) {
+    setConfigValue('IMPORT_DAYS', days);
   }
 
   const dateRange = getImportDateRange();
-  showAlert(
-    `Date range configured!\n\n` +
-    `Effective Range: ${dateRange.startDate} to ${dateRange.endDate}`,
-    'Settings Updated'
-  );
+  logMessage(`Date range configured: ${dateRange.startDate} to ${dateRange.endDate}`, 'INFO');
 }
 
 /**

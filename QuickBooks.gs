@@ -248,7 +248,9 @@ function fetchQBOProjects() {
 
   try {
     const accessToken = getValidAccessToken();
+    const realmId = getQBORealm();
 
+    // GraphQL query - fetching ALL projects regardless of status first
     const graphqlQuery = `
       query projects {
         company {
@@ -258,11 +260,16 @@ function fetchQBOProjects() {
                 id
                 name
                 status
+                description
                 customer {
                   id
                   displayName
                 }
               }
+            }
+            pageInfo {
+              hasNextPage
+              hasPreviousPage
             }
           }
         }
@@ -270,12 +277,14 @@ function fetchQBOProjects() {
     `;
 
     logMessage('Making GraphQL request to fetch projects...', 'INFO');
+    logMessage(`Using realmId: ${realmId}`, 'INFO');
 
     const response = UrlFetchApp.fetch('https://public.api.intuit.com/2020-04/graphql', {
       method: 'post',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
       },
       payload: JSON.stringify({ query: graphqlQuery }),
       muteHttpExceptions: true
@@ -285,7 +294,7 @@ function fetchQBOProjects() {
     const responseBody = response.getContentText();
 
     logMessage(`GraphQL response code: ${responseCode}`, 'INFO');
-    logMessage(`GraphQL response body (first 500 chars): ${responseBody.substring(0, 500)}`, 'INFO');
+    logMessage(`GraphQL full response: ${responseBody}`, 'INFO');
 
     if (responseCode !== 200) {
       logMessage(`GraphQL projects fetch failed: ${responseCode} - ${responseBody}`, 'WARN');
@@ -296,30 +305,35 @@ function fetchQBOProjects() {
     const result = JSON.parse(responseBody);
 
     if (result.errors) {
-      const errorMessages = result.errors.map(e => e.message).join('; ');
+      const errorMessages = result.errors.map(e => `${e.message} (${e.extensions?.code || 'no code'})`).join('; ');
       logMessage(`GraphQL errors: ${errorMessages}`, 'WARN');
-      logMessage('Common causes: scope not granted, subscription level too low', 'INFO');
+      logMessage('Full error details: ' + JSON.stringify(result.errors), 'WARN');
       return [];
     }
 
+    // Log the full data structure for debugging
+    logMessage(`GraphQL data structure: ${JSON.stringify(result.data)}`, 'INFO');
+
     const projectsEdges = result.data?.company?.projects?.edges || [];
-    const projectList = projectsEdges
-      .map(edge => ({
-        id: edge.node.id,
-        name: edge.node.name,
-        status: edge.node.status,
-        customerId: edge.node.customer?.id || '',
-        customerName: edge.node.customer?.displayName || ''
-      }))
-      .filter(p => p.status === 'ACTIVE' || p.status === 'IN_PROGRESS');
+    logMessage(`Raw projects edges count: ${projectsEdges.length}`, 'INFO');
 
-    logMessage(`Fetched ${projectList.length} active projects`, 'INFO');
+    // Map ALL projects first, then log statuses
+    const allProjects = projectsEdges.map(edge => ({
+      id: edge.node.id,
+      name: edge.node.name,
+      status: edge.node.status,
+      customerId: edge.node.customer?.id || '',
+      customerName: edge.node.customer?.displayName || ''
+    }));
 
-    if (projectList.length === 0 && projectsEdges.length > 0) {
-      logMessage(`Found ${projectsEdges.length} projects but none are active`, 'INFO');
-    }
+    // Log all statuses found
+    const statuses = [...new Set(allProjects.map(p => p.status))];
+    logMessage(`Project statuses found: ${statuses.join(', ') || 'none'}`, 'INFO');
 
-    return projectList;
+    // Return all projects (don't filter by status for now)
+    logMessage(`Returning ${allProjects.length} projects`, 'INFO');
+
+    return allProjects;
   } catch (error) {
     logMessage(`Error fetching projects: ${error.message}`, 'ERROR');
     logMessage('Stack: ' + error.stack, 'ERROR');
@@ -339,7 +353,7 @@ function showProjectsInfo() {
   if (projects.length > 0) {
     message = `Found ${projects.length} QBO Projects:\n\n`;
     projects.slice(0, 10).forEach(p => {
-      message += `• ${p.name} (Customer: ${p.customerName || 'None'})\n`;
+      message += `• ${p.name} (Status: ${p.status}, Customer: ${p.customerName || 'None'})\n`;
     });
     if (projects.length > 10) {
       message += `\n... and ${projects.length - 10} more`;
@@ -354,11 +368,91 @@ function showProjectsInfo() {
       `   • Run "Setup > Connect to QuickBooks"\n` +
       `   • Complete the OAuth flow again\n\n` +
       `3. Create projects: Make sure you have at least one project created in QBO\n\n` +
-      `4. Check Logs sheet for detailed error messages\n\n` +
+      `4. Check Apps Script Logs: View > Executions for detailed API responses\n\n` +
+      `5. Run "Raw Projects Debug" from Maintenance menu for full API response\n\n` +
       `Note: QBO Projects are optional. You can sync time entries using Customers only.`;
   }
 
   showAlert(message, 'QBO Projects Status');
+}
+
+/**
+ * Raw debug function to see exactly what the GraphQL API returns
+ */
+function debugRawProjectsResponse() {
+  showToast('Fetching raw GraphQL response...');
+
+  try {
+    const accessToken = getValidAccessToken();
+    const realmId = getQBORealm();
+
+    const graphqlQuery = `
+      query projects {
+        company {
+          projects {
+            edges {
+              node {
+                id
+                name
+                status
+                description
+                customer {
+                  id
+                  displayName
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const response = UrlFetchApp.fetch('https://public.api.intuit.com/2020-04/graphql', {
+      method: 'post',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      payload: JSON.stringify({ query: graphqlQuery }),
+      muteHttpExceptions: true
+    });
+
+    const responseCode = response.getResponseCode();
+    const responseBody = response.getContentText();
+
+    // Write to a debug sheet for full visibility
+    const ss = getSpreadsheet();
+    let debugSheet = ss.getSheetByName('_Debug_Projects');
+    if (!debugSheet) {
+      debugSheet = ss.insertSheet('_Debug_Projects');
+    }
+    debugSheet.clear();
+
+    debugSheet.getRange(1, 1).setValue('GraphQL Projects Debug');
+    debugSheet.getRange(2, 1).setValue('Timestamp:');
+    debugSheet.getRange(2, 2).setValue(new Date().toISOString());
+    debugSheet.getRange(3, 1).setValue('Realm ID:');
+    debugSheet.getRange(3, 2).setValue(realmId || 'NOT SET');
+    debugSheet.getRange(4, 1).setValue('Response Code:');
+    debugSheet.getRange(4, 2).setValue(responseCode);
+    debugSheet.getRange(5, 1).setValue('Response Body:');
+    debugSheet.getRange(6, 1).setValue(responseBody);
+
+    // Make the response body cell wrap
+    debugSheet.getRange(6, 1).setWrap(true);
+    debugSheet.setColumnWidth(1, 800);
+
+    debugSheet.activate();
+
+    showAlert(
+      `Debug info written to "_Debug_Projects" sheet.\n\n` +
+      `Response Code: ${responseCode}\n\n` +
+      `Check the sheet for the full API response.`,
+      'Projects Debug'
+    );
+  } catch (error) {
+    showAlert(`Debug failed: ${error.message}`, 'Error');
+  }
 }
 
 /**

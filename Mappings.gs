@@ -452,6 +452,7 @@ function wireAllDropdowns() {
 
 /**
  * Wires dropdowns for User mappings
+ * Note: ID/Name auto-population is handled by onEdit trigger when values change
  */
 function wireUserMappingDropdowns() {
   const ss = getSpreadsheet();
@@ -475,17 +476,13 @@ function wireUserMappingDropdowns() {
 
   // Apply to QBO Employee Name column (E)
   sheet.getRange(2, 5, dataRows, 1).setDataValidation(rule);
-
-  // Add formula to auto-fill QBO Employee ID (column D) based on name selection
-  for (let row = 2; row <= sheet.getLastRow(); row++) {
-    const formula = `=IF(E${row}="","",VLOOKUP(E${row},'${CONFIG.SHEETS.QBO_EMPLOYEES}'!B:A,2,FALSE))`;
-    sheet.getRange(row, 4).setFormula(formula);
-  }
+  // ID column (D) will auto-populate via onEdit trigger when name is selected
 }
 
 /**
  * Wires dropdowns for Client mappings
  * Toggl Clients map to QBO Customers only (top-level, not sub-customers or projects)
+ * Note: ID/Name auto-population is handled by onEdit trigger when values change
  */
 function wireClientMappingDropdowns() {
   const ss = getSpreadsheet();
@@ -509,12 +506,7 @@ function wireClientMappingDropdowns() {
 
   // Apply to QBO Customer Name column (D)
   sheet.getRange(2, 4, dataRows, 1).setDataValidation(rule);
-
-  // Add formula for QBO Customer ID (column C)
-  for (let row = 2; row <= sheet.getLastRow(); row++) {
-    const formula = `=IF(D${row}="","",VLOOKUP(D${row},'${CONFIG.SHEETS.QBO_CUSTOMERS}'!B:A,2,FALSE))`;
-    sheet.getRange(row, 3).setFormula(formula);
-  }
+  // ID column (C) will auto-populate via onEdit trigger when name is selected
 }
 
 /**
@@ -522,6 +514,7 @@ function wireClientMappingDropdowns() {
  * Toggl Projects can map to:
  *   - QBO Customer (required) - from QBO_Customers_Master
  *   - QBO Project (optional) - from QBO_Projects_Master (separate from sub-customers)
+ * Note: ID/Name auto-population is handled by onEdit trigger when values change
  */
 function wireProjectMappingDropdowns() {
   const ss = getSpreadsheet();
@@ -545,12 +538,7 @@ function wireProjectMappingDropdowns() {
 
     // QBO Customer Name column (E)
     sheet.getRange(2, 5, dataRows, 1).setDataValidation(customerRule);
-
-    // Formula for Customer ID (column D) - lookup from customer name
-    for (let row = 2; row <= sheet.getLastRow(); row++) {
-      const formula = `=IF(E${row}="","",VLOOKUP(E${row},'${CONFIG.SHEETS.QBO_CUSTOMERS}'!B:A,2,FALSE))`;
-      sheet.getRange(row, 4).setFormula(formula);
-    }
+    // Customer ID column (D) will auto-populate via onEdit trigger
   }
 
   // QBO Project dropdown (from QBO_Projects_Master - actual QBO Projects, NOT sub-customers)
@@ -566,12 +554,7 @@ function wireProjectMappingDropdowns() {
 
     // QBO Project Name column (G)
     sheet.getRange(2, 7, dataRows, 1).setDataValidation(projectRule);
-
-    // Formula for Project ID (column F) - lookup from project name
-    for (let row = 2; row <= sheet.getLastRow(); row++) {
-      const formula = `=IF(G${row}="","",VLOOKUP(G${row},'${CONFIG.SHEETS.QBO_PROJECTS}'!B:A,2,FALSE))`;
-      sheet.getRange(row, 6).setFormula(formula);
-    }
+    // Project ID column (F) will auto-populate via onEdit trigger
   } else {
     // Clear any existing project dropdowns if no projects available
     sheet.getRange(2, 7, dataRows, 1).clearDataValidations();
@@ -580,6 +563,7 @@ function wireProjectMappingDropdowns() {
 
 /**
  * Wires dropdowns for Task/Service mappings
+ * Note: ID/Name auto-population is handled by onEdit trigger when values change
  */
 function wireTaskMappingDropdowns() {
   const ss = getSpreadsheet();
@@ -602,12 +586,7 @@ function wireTaskMappingDropdowns() {
 
   // QBO Service Item Name column (F)
   sheet.getRange(2, 6, dataRows, 1).setDataValidation(rule);
-
-  // Formula for Service Item ID (column E)
-  for (let row = 2; row <= sheet.getLastRow(); row++) {
-    const formula = `=IF(F${row}="","",VLOOKUP(F${row},'${CONFIG.SHEETS.QBO_ITEMS}'!B:A,2,FALSE))`;
-    sheet.getRange(row, 5).setFormula(formula);
-  }
+  // Service Item ID column (E) will auto-populate via onEdit trigger
 }
 
 // ============================================================================
@@ -789,4 +768,171 @@ function cleanupSheet(sheetName, validIds, keyColumn) {
   });
 
   return rowsToDelete.length;
+}
+
+// ============================================================================
+// AUTO-POPULATE ON EDIT
+// ============================================================================
+
+/**
+ * Trigger function that runs when a cell is edited
+ * Auto-populates ID/Name pairs in mapping sheets
+ * @param {Object} e - Edit event object
+ */
+function onEdit(e) {
+  if (!e || !e.range) return;
+
+  const sheet = e.range.getSheet();
+  const sheetName = sheet.getName();
+  const row = e.range.getRow();
+  const col = e.range.getColumn();
+
+  // Only process data rows (not header)
+  if (row < 2) return;
+
+  // Handle different mapping sheets
+  switch (sheetName) {
+    case CONFIG.SHEETS.MAPPINGS_USERS:
+      handleUserMappingEdit(sheet, row, col, e.value);
+      break;
+    case CONFIG.SHEETS.MAPPINGS_CLIENTS:
+      handleClientMappingEdit(sheet, row, col, e.value);
+      break;
+    case CONFIG.SHEETS.MAPPINGS_PROJECTS:
+      handleProjectMappingEdit(sheet, row, col, e.value);
+      break;
+    case CONFIG.SHEETS.MAPPINGS_TASKS:
+      handleTaskMappingEdit(sheet, row, col, e.value);
+      break;
+  }
+}
+
+/**
+ * Handles edits in User mappings sheet
+ * Columns: 1=Toggl ID, 2=Toggl Name, 3=Email, 4=QBO ID, 5=QBO Name, 6=Auto, 7=Updated
+ */
+function handleUserMappingEdit(sheet, row, col, value) {
+  const ss = getSpreadsheet();
+  const masterSheet = ss.getSheetByName(CONFIG.SHEETS.QBO_EMPLOYEES);
+  if (!masterSheet || masterSheet.getLastRow() <= 1) return;
+
+  const masterData = masterSheet.getRange(2, 1, masterSheet.getLastRow() - 1, 2).getValues();
+
+  if (col === 5 && value) {
+    // QBO Name edited - find and set QBO ID
+    const match = masterData.find(r => r[1] === value);
+    if (match) {
+      sheet.getRange(row, 4).setValue(match[0]);
+    }
+  } else if (col === 4 && value) {
+    // QBO ID edited - find and set QBO Name
+    const match = masterData.find(r => String(r[0]) === String(value));
+    if (match) {
+      sheet.getRange(row, 5).setValue(match[1]);
+    }
+  }
+}
+
+/**
+ * Handles edits in Client mappings sheet
+ * Columns: 1=Toggl ID, 2=Toggl Name, 3=QBO ID, 4=QBO Name, 5=Auto, 6=Updated
+ */
+function handleClientMappingEdit(sheet, row, col, value) {
+  const ss = getSpreadsheet();
+  const masterSheet = ss.getSheetByName(CONFIG.SHEETS.QBO_CUSTOMERS);
+  if (!masterSheet || masterSheet.getLastRow() <= 1) return;
+
+  const masterData = masterSheet.getRange(2, 1, masterSheet.getLastRow() - 1, 2).getValues();
+
+  if (col === 4 && value) {
+    // QBO Name edited - find and set QBO ID
+    const match = masterData.find(r => r[1] === value);
+    if (match) {
+      sheet.getRange(row, 3).setValue(match[0]);
+    }
+  } else if (col === 3 && value) {
+    // QBO ID edited - find and set QBO Name
+    const match = masterData.find(r => String(r[0]) === String(value));
+    if (match) {
+      sheet.getRange(row, 4).setValue(match[1]);
+    }
+  }
+}
+
+/**
+ * Handles edits in Project mappings sheet
+ * Columns: 1=Toggl ID, 2=Toggl Name, 3=Client, 4=QBO Cust ID, 5=QBO Cust Name, 6=QBO Proj ID, 7=QBO Proj Name, 8=Updated
+ */
+function handleProjectMappingEdit(sheet, row, col, value) {
+  const ss = getSpreadsheet();
+
+  // Customer lookup
+  if (col === 4 || col === 5) {
+    const customerSheet = ss.getSheetByName(CONFIG.SHEETS.QBO_CUSTOMERS);
+    if (customerSheet && customerSheet.getLastRow() > 1) {
+      const customerData = customerSheet.getRange(2, 1, customerSheet.getLastRow() - 1, 2).getValues();
+
+      if (col === 5 && value) {
+        // QBO Customer Name edited - find and set QBO Customer ID
+        const match = customerData.find(r => r[1] === value);
+        if (match) {
+          sheet.getRange(row, 4).setValue(match[0]);
+        }
+      } else if (col === 4 && value) {
+        // QBO Customer ID edited - find and set QBO Customer Name
+        const match = customerData.find(r => String(r[0]) === String(value));
+        if (match) {
+          sheet.getRange(row, 5).setValue(match[1]);
+        }
+      }
+    }
+  }
+
+  // Project lookup
+  if (col === 6 || col === 7) {
+    const projectSheet = ss.getSheetByName(CONFIG.SHEETS.QBO_PROJECTS);
+    if (projectSheet && projectSheet.getLastRow() > 1) {
+      const projectData = projectSheet.getRange(2, 1, projectSheet.getLastRow() - 1, 2).getValues();
+
+      if (col === 7 && value) {
+        // QBO Project Name edited - find and set QBO Project ID
+        const match = projectData.find(r => r[1] === value);
+        if (match) {
+          sheet.getRange(row, 6).setValue(match[0]);
+        }
+      } else if (col === 6 && value) {
+        // QBO Project ID edited - find and set QBO Project Name
+        const match = projectData.find(r => String(r[0]) === String(value));
+        if (match) {
+          sheet.getRange(row, 7).setValue(match[1]);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Handles edits in Task mappings sheet
+ * Columns: 1=Toggl ID, 2=Task Name, 3=Project, 4=Client, 5=QBO ID, 6=QBO Name, 7=Auto, 8=Updated
+ */
+function handleTaskMappingEdit(sheet, row, col, value) {
+  const ss = getSpreadsheet();
+  const masterSheet = ss.getSheetByName(CONFIG.SHEETS.QBO_ITEMS);
+  if (!masterSheet || masterSheet.getLastRow() <= 1) return;
+
+  const masterData = masterSheet.getRange(2, 1, masterSheet.getLastRow() - 1, 2).getValues();
+
+  if (col === 6 && value) {
+    // QBO Name edited - find and set QBO ID
+    const match = masterData.find(r => r[1] === value);
+    if (match) {
+      sheet.getRange(row, 5).setValue(match[0]);
+    }
+  } else if (col === 5 && value) {
+    // QBO ID edited - find and set QBO Name
+    const match = masterData.find(r => String(r[0]) === String(value));
+    if (match) {
+      sheet.getRange(row, 6).setValue(match[1]);
+    }
+  }
 }
