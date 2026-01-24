@@ -79,8 +79,8 @@ function createMenu() {
         .addSeparator()
         .addItem('Ensure Tags Exist in Toggl', 'ensureWorkflowTagsExist')
         .addSeparator()
-        .addItem('Hide Master Sheets', 'hideAndOrganizeMasterSheets')
-        .addItem('Show Master Sheets', 'showAllMasterSheets')
+        .addItem('Hide QBO Master Sheets', 'hideQBOMasterSheets')
+        .addItem('Show QBO Master Sheets', 'showQBOMasterSheets')
         .addSeparator()
         .addItem('Apply Unmapped Row Highlighting', 'applyUnmappedRowHighlighting')
         .addItem('Update Project Customer Mappings', 'updateProjectCustomerMappings')
@@ -124,6 +124,9 @@ function buildAllSheets() {
 
     // Format all sheets
     formatAllSheets();
+
+    // Hide the QBO master sheets (they're for data validation, not user interaction)
+    hideQBOMasterSheets();
 
     showAlert(
       'All sheets have been created successfully!\n\n' +

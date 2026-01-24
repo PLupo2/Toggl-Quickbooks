@@ -9,7 +9,7 @@
 
 /**
  * Refreshes all QBO master lists
- * Also rewires dropdowns to include any new items
+ * Also rewires dropdowns and auto-hides master sheets
  */
 function refreshQBOMasterLists() {
   showToast('Refreshing QuickBooks master lists...');
@@ -22,6 +22,9 @@ function refreshQBOMasterLists() {
 
     // Rewire dropdowns to include new master data
     wireAllDropdowns();
+
+    // Auto-hide the QBO master sheets
+    hideQBOMasterSheets();
 
     showToast('QuickBooks master lists refreshed successfully!');
   } catch (error) {
@@ -1017,21 +1020,14 @@ function handleTaskMappingEdit(sheet, row, col, value) {
 // ============================================================================
 
 /**
- * Hides all master data sheets and adds separator headers in the hidden menu
+ * Hides all QBO master data sheets
+ * Called automatically after refreshing QBO master lists
  */
-function hideAndOrganizeMasterSheets() {
+function hideQBOMasterSheets() {
   const ss = getSpreadsheet();
 
-  // Create separator sheets (they act as headers in the hidden sheets menu)
-  createSeparatorSheet(ss, '── Toggl Masters ──');
-  createSeparatorSheet(ss, '── QBO Masters ──');
-
-  // List of sheets to hide
+  // List of QBO master sheets to hide
   const sheetsToHide = [
-    // Toggl-related master/separator
-    '── Toggl Masters ──',
-    // QBO-related
-    '── QBO Masters ──',
     CONFIG.SHEETS.QBO_CUSTOMERS,
     CONFIG.SHEETS.QBO_EMPLOYEES,
     CONFIG.SHEETS.QBO_ITEMS,
@@ -1046,45 +1042,16 @@ function hideAndOrganizeMasterSheets() {
     }
   }
 
-  logMessage('Master sheets hidden and organized', 'INFO');
-  showToast('Master sheets have been hidden. Access them via View > Hidden sheets.');
+  logMessage('QBO master sheets hidden', 'INFO');
 }
 
 /**
- * Creates a separator sheet to act as a header in the hidden sheets menu
- * @param {Spreadsheet} ss - Spreadsheet object
- * @param {string} name - Separator name (e.g., "── Toggl Masters ──")
+ * Shows all hidden QBO master sheets (for debugging/access)
  */
-function createSeparatorSheet(ss, name) {
-  let sheet = ss.getSheetByName(name);
-
-  if (!sheet) {
-    sheet = ss.insertSheet(name);
-    // Make it minimal - just one cell with instructions
-    sheet.getRange('A1').setValue('This is a separator sheet for organizing hidden sheets.');
-    sheet.getRange('A1').setFontColor('#999999');
-    sheet.setColumnWidth(1, 400);
-    // Delete extra rows/columns to keep it minimal
-    if (sheet.getMaxRows() > 1) {
-      sheet.deleteRows(2, sheet.getMaxRows() - 1);
-    }
-    if (sheet.getMaxColumns() > 1) {
-      sheet.deleteColumns(2, sheet.getMaxColumns() - 1);
-    }
-  }
-
-  return sheet;
-}
-
-/**
- * Shows all hidden master sheets (for debugging/access)
- */
-function showAllMasterSheets() {
+function showQBOMasterSheets() {
   const ss = getSpreadsheet();
 
   const sheetsToShow = [
-    '── Toggl Masters ──',
-    '── QBO Masters ──',
     CONFIG.SHEETS.QBO_CUSTOMERS,
     CONFIG.SHEETS.QBO_EMPLOYEES,
     CONFIG.SHEETS.QBO_ITEMS,
@@ -1098,7 +1065,7 @@ function showAllMasterSheets() {
     }
   }
 
-  showToast('All master sheets are now visible.');
+  showToast('QBO master sheets are now visible.');
 }
 
 // ============================================================================
