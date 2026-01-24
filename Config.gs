@@ -52,9 +52,7 @@ const CONFIG = {
   // Sheet names
   SHEETS: {
     CONFIG: 'Config',
-    INBOX: 'Inbox_Approvals',
-    QUEUE: 'Queue',
-    ARCHIVE: 'Synced_Archive',
+    SYNC_LOG: 'Sync_Log',  // Replaces Inbox/Queue - shows sync history
     MAPPINGS_CLIENTS: 'Mappings_Clients',
     MAPPINGS_PROJECTS: 'Mappings_Projects',
     MAPPINGS_USERS: 'Mappings_Users',
@@ -65,28 +63,20 @@ const CONFIG = {
     QBO_PROJECTS: 'QBO_Projects_Master'
   },
 
+  // Tag names used for workflow
+  TAGS: {
+    APPROVED: 'Approved',
+    SYNCED: 'Synced'
+  },
+
   // Column definitions for each sheet
   COLUMNS: {
-    INBOX: [
-      'Date', 'Start Time', 'End Time', 'Duration',
-      'Toggl User', 'QBO Employee',
+    SYNC_LOG: [
+      'Synced At', 'Toggl Entry ID', 'QBO TimeActivity ID',
+      'Date', 'Duration', 'Toggl User', 'QBO Employee',
       'Toggl Client', 'Toggl Project', 'QBO Customer', 'QBO Project',
       'Toggl Task', 'QBO Service Item',
-      'Description', 'Billable', 'Tags', 'Status', 'Approved',
-      'Toggl Entry ID', 'Validation Errors', 'Imported At', 'Notes'
-    ],
-    QUEUE: [
-      'Toggl Entry ID', 'QBO Employee ID', 'QBO Employee Name',
-      'QBO Customer ID', 'QBO Customer Name', 'QBO Project ID',
-      'QBO Project Name', 'QBO Service Item ID', 'QBO Service Item Name',
-      'Description', 'Date', 'Duration (hrs)', 'Billable',
-      'Added to Queue At', 'Sync Attempts', 'Last Error'
-    ],
-    ARCHIVE: [
-      'Toggl Entry ID', 'QBO TimeActivity ID', 'QBO Employee Name',
-      'QBO Customer Name', 'QBO Project Name', 'QBO Service Item Name',
-      'Description', 'Date', 'Duration (hrs)', 'Billable',
-      'Synced At', 'Original Import Date', 'Notes'
+      'Description', 'Billable', 'Status', 'Error'
     ],
     MAPPINGS_CLIENTS: [
       'Toggl Client ID', 'Toggl Client Name', 'QBO Customer ID',
@@ -109,7 +99,7 @@ const CONFIG = {
     QBO_CUSTOMERS: ['QBO Customer ID', 'QBO Customer Name'],
     QBO_EMPLOYEES: ['QBO Employee ID', 'QBO Employee Name'],
     QBO_ITEMS: ['QBO Service Item ID', 'QBO Service Item Name'],
-    QBO_PROJECTS: ['QBO Project ID', 'QBO Project Name']
+    QBO_PROJECTS: ['QBO Project ID', 'QBO Project Name', 'QBO Customer ID', 'QBO Customer Name']
   },
 
   // Default configuration values
@@ -288,13 +278,16 @@ function createConfigSheet(ss) {
   configSheet.getRange('A1:B1').setFontWeight('bold');
 
   // Set default configuration values
+  // Use START_DATE and END_DATE for specific date range, or leave blank to use IMPORT_DAYS
   const defaults = [
-    ['IMPORT_DAYS', CONFIG.DEFAULTS.IMPORT_DAYS],
+    ['START_DATE', ''],  // Leave blank to use IMPORT_DAYS, or set YYYY-MM-DD
+    ['END_DATE', ''],    // Leave blank for today, or set YYYY-MM-DD
+    ['IMPORT_DAYS', CONFIG.DEFAULTS.IMPORT_DAYS],  // Used only if START_DATE is blank
     ['BATCH_SIZE', CONFIG.DEFAULTS.BATCH_SIZE],
-    ['LAST_IMPORT_DATE', ''],
     ['LAST_SYNC_DATE', ''],
-    ['AUTO_APPROVE', 'FALSE'],
-    ['SYNC_BILLABLE_ONLY', 'FALSE']
+    ['SYNC_BILLABLE_ONLY', 'FALSE'],
+    ['APPROVED_TAG', CONFIG.TAGS.APPROVED],  // Tag name to look for in Toggl
+    ['SYNCED_TAG', CONFIG.TAGS.SYNCED]       // Tag name to add after sync
   ];
 
   configSheet.getRange(2, 1, defaults.length, 2).setValues(defaults);
@@ -437,4 +430,48 @@ function showAlert(message, title = 'Toggl-QBO Sync') {
 function logMessage(message, level = 'INFO') {
   const timestamp = formatDateTime(new Date());
   console.log(`[${timestamp}] [${level}] ${message}`);
+}
+
+/**
+ * Gets the date range for import based on Config settings
+ * Uses START_DATE/END_DATE if set, otherwise calculates from IMPORT_DAYS
+ * @returns {Object} Object with startDate and endDate as YYYY-MM-DD strings
+ */
+function getImportDateRange() {
+  let startDateStr = getConfigValue('START_DATE', '');
+  let endDateStr = getConfigValue('END_DATE', '');
+
+  // If START_DATE is blank, calculate from IMPORT_DAYS
+  if (!startDateStr) {
+    const importDays = parseInt(getConfigValue('IMPORT_DAYS', CONFIG.DEFAULTS.IMPORT_DAYS), 10);
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - importDays);
+    startDateStr = formatDate(startDate);
+  }
+
+  // If END_DATE is blank, use today
+  if (!endDateStr) {
+    endDateStr = formatDate(new Date());
+  }
+
+  return {
+    startDate: startDateStr,
+    endDate: endDateStr
+  };
+}
+
+/**
+ * Gets the configured tag name for approved entries
+ * @returns {string} Approved tag name
+ */
+function getApprovedTagName() {
+  return getConfigValue('APPROVED_TAG', CONFIG.TAGS.APPROVED);
+}
+
+/**
+ * Gets the configured tag name for synced entries
+ * @returns {string} Synced tag name
+ */
+function getSyncedTagName() {
+  return getConfigValue('SYNCED_TAG', CONFIG.TAGS.SYNCED);
 }

@@ -109,6 +109,95 @@ function fetchTogglTags() {
   }
 }
 
+/**
+ * Creates a tag in Toggl if it doesn't exist
+ * @param {string} tagName - Name of the tag to create
+ * @returns {Object} Created or existing tag object
+ */
+function ensureTagExists(tagName) {
+  const workspaceId = getOrFetchWorkspaceId();
+  const existingTags = fetchTogglTags();
+
+  const existing = existingTags.find(t => t.name.toLowerCase() === tagName.toLowerCase());
+  if (existing) {
+    return existing;
+  }
+
+  logMessage(`Creating tag: ${tagName}`, 'INFO');
+
+  try {
+    const tag = togglApiV9(`/workspaces/${workspaceId}/tags`, {
+      method: 'post',
+      payload: JSON.stringify({ name: tagName })
+    });
+    return tag;
+  } catch (error) {
+    logMessage(`Error creating tag: ${error.message}`, 'ERROR');
+    throw error;
+  }
+}
+
+/**
+ * Adds a tag to a time entry
+ * @param {number} entryId - Time entry ID
+ * @param {string} tagName - Tag name to add
+ * @returns {Object} Updated time entry
+ */
+function addTagToTimeEntry(entryId, tagName) {
+  const workspaceId = getOrFetchWorkspaceId();
+
+  // First, get the current entry to see its existing tags
+  const entry = togglApiV9(`/me/time_entries/${entryId}`);
+  const currentTags = entry.tags || [];
+
+  // Check if tag already exists on entry
+  if (currentTags.includes(tagName)) {
+    logMessage(`Entry ${entryId} already has tag "${tagName}"`, 'INFO');
+    return entry;
+  }
+
+  // Add the new tag
+  const updatedTags = [...currentTags, tagName];
+
+  logMessage(`Adding tag "${tagName}" to entry ${entryId}`, 'INFO');
+
+  const updated = togglApiV9(`/workspaces/${workspaceId}/time_entries/${entryId}`, {
+    method: 'put',
+    payload: JSON.stringify({ tags: updatedTags })
+  });
+
+  return updated;
+}
+
+/**
+ * Adds a tag to multiple time entries
+ * @param {number[]} entryIds - Array of time entry IDs
+ * @param {string} tagName - Tag name to add
+ * @returns {Object} Results with success and failure counts
+ */
+function addTagToMultipleEntries(entryIds, tagName) {
+  const workspaceId = getOrFetchWorkspaceId();
+  const results = { success: 0, failed: 0, errors: [] };
+
+  // Ensure tag exists first
+  ensureTagExists(tagName);
+
+  for (const entryId of entryIds) {
+    try {
+      addTagToTimeEntry(entryId, tagName);
+      results.success++;
+    } catch (error) {
+      results.failed++;
+      results.errors.push({ entryId, error: error.message });
+      logMessage(`Failed to add tag to entry ${entryId}: ${error.message}`, 'WARN');
+    }
+    // Small delay to avoid rate limiting
+    Utilities.sleep(100);
+  }
+
+  return results;
+}
+
 // ============================================================================
 // WORKSPACE OPERATIONS
 // ============================================================================
@@ -751,5 +840,250 @@ function importCurrentUserEntries() {
   } catch (error) {
     showAlert(`Import failed: ${error.message}`, 'Error');
     logMessage(`Import error: ${error.message}`, 'ERROR');
+  }
+}
+
+// ============================================================================
+// TAG-BASED SYNC WORKFLOW
+// ============================================================================
+
+/**
+ * Main sync function: Fetches Toggl entries with "Approved" tag (but not "Synced"),
+ * syncs them to QBO, then adds "Synced" tag back to Toggl.
+ * @returns {Object} Sync results
+ */
+function syncApprovedEntries() {
+  logMessage('Starting sync of approved entries...', 'INFO');
+  showToast('Syncing approved entries to QuickBooks...');
+
+  const approvedTag = getApprovedTagName();
+  const syncedTag = getSyncedTagName();
+
+  // Get date range from config
+  const dateRange = getImportDateRange();
+  logMessage(`Date range: ${dateRange.startDate} to ${dateRange.endDate}`, 'INFO');
+
+  // Fetch all time entries in date range
+  const allEntries = fetchTimeEntriesAllUsers(dateRange.startDate, dateRange.endDate);
+  logMessage(`Fetched ${allEntries.length} total entries`, 'INFO');
+
+  // Filter for entries with Approved tag but NOT Synced tag
+  const entriesToSync = allEntries.filter(entry => {
+    const tags = entry.tags || [];
+    const hasApproved = tags.some(t => t.toLowerCase() === approvedTag.toLowerCase());
+    const hasSynced = tags.some(t => t.toLowerCase() === syncedTag.toLowerCase());
+    return hasApproved && !hasSynced;
+  });
+
+  logMessage(`Found ${entriesToSync.length} entries with "${approvedTag}" tag (without "${syncedTag}")`, 'INFO');
+
+  if (entriesToSync.length === 0) {
+    showToast(`No entries found with "${approvedTag}" tag to sync.`);
+    return { synced: 0, failed: 0, skipped: 0 };
+  }
+
+  // Build lookups for Toggl data
+  const togglLookups = buildTogglLookups();
+
+  // Build mapping lookups for QBO resolution
+  const mappings = buildMappingLookups();
+
+  // Process each entry
+  const results = {
+    synced: 0,
+    failed: 0,
+    skipped: 0,
+    errors: [],
+    syncedEntryIds: []
+  };
+
+  for (const entry of entriesToSync) {
+    try {
+      const processed = processTimeEntry(entry, togglLookups);
+      const syncResult = syncSingleEntry(processed, mappings);
+
+      if (syncResult.success) {
+        results.synced++;
+        results.syncedEntryIds.push(processed.togglEntryId);
+
+        // Log to Sync_Log sheet
+        logSyncResult(processed, syncResult.qboId, 'Success', '');
+      } else {
+        results.failed++;
+        results.errors.push({ entryId: processed.togglEntryId, error: syncResult.error });
+
+        // Log failure to Sync_Log sheet
+        logSyncResult(processed, '', 'Failed', syncResult.error);
+      }
+    } catch (error) {
+      const entryId = entry.id || entry.time_entry_id;
+      results.failed++;
+      results.errors.push({ entryId, error: error.message });
+      logMessage(`Error processing entry ${entryId}: ${error.message}`, 'ERROR');
+    }
+
+    // Rate limiting
+    Utilities.sleep(100);
+  }
+
+  // Add "Synced" tag to successfully synced entries
+  if (results.syncedEntryIds.length > 0) {
+    logMessage(`Adding "${syncedTag}" tag to ${results.syncedEntryIds.length} entries...`, 'INFO');
+    const tagResults = addTagToMultipleEntries(results.syncedEntryIds, syncedTag);
+    logMessage(`Tagged ${tagResults.success} entries, ${tagResults.failed} failed`, 'INFO');
+  }
+
+  // Update last sync date
+  setConfigValue('LAST_SYNC_DATE', formatDateTime(new Date()));
+
+  const message = `Sync complete: ${results.synced} synced, ${results.failed} failed`;
+  logMessage(message, 'INFO');
+  showAlert(message, 'Sync Complete');
+
+  return results;
+}
+
+/**
+ * Syncs a single processed entry to QBO
+ * @param {Object} entry - Processed time entry
+ * @param {Object} mappings - QBO mapping lookups
+ * @returns {Object} Result with success status and qboId or error
+ */
+function syncSingleEntry(entry, mappings) {
+  // Resolve QBO mappings
+  const qboEmployee = mappings.users[entry.togglUserId];
+  const qboProject = mappings.projects[entry.togglProjectId];
+  const qboClient = mappings.clients[entry.togglClientId];
+  const qboTask = mappings.tasks[entry.togglTaskId];
+
+  // Validate required mappings
+  if (!qboEmployee) {
+    return { success: false, error: `No QBO employee mapping for Toggl user: ${entry.togglUser}` };
+  }
+
+  // Customer comes from project mapping first, then client mapping
+  let customerId = qboProject?.qboCustomerId || qboClient?.qboCustomerId;
+  if (!customerId) {
+    return { success: false, error: `No QBO customer mapping for: ${entry.togglClient || entry.togglProject}` };
+  }
+
+  // Service item from task mapping (optional)
+  const serviceItemId = qboTask?.qboServiceItemId;
+  if (!serviceItemId) {
+    return { success: false, error: `No QBO service item mapping for task: ${entry.togglTask || '(no task)'}` };
+  }
+
+  // Build time data for QBO
+  const timeData = {
+    togglEntryId: entry.togglEntryId,
+    employeeId: qboEmployee.qboEmployeeId,
+    customerId: customerId,
+    projectId: qboProject?.qboProjectId || '',  // Optional
+    serviceItemId: serviceItemId,
+    date: entry.date,
+    hours: entry.durationSeconds / 3600,  // Convert seconds to hours
+    description: entry.description,
+    billable: entry.billable
+  };
+
+  try {
+    const activity = createTimeActivity(timeData);
+    return { success: true, qboId: activity.Id };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Logs a sync result to the Sync_Log sheet
+ * @param {Object} entry - Processed entry
+ * @param {string} qboId - QBO TimeActivity ID (empty if failed)
+ * @param {string} status - Success or Failed
+ * @param {string} error - Error message (empty if success)
+ */
+function logSyncResult(entry, qboId, status, error) {
+  const ss = getSpreadsheet();
+  const sheet = getOrCreateSheet(CONFIG.SHEETS.SYNC_LOG, CONFIG.COLUMNS.SYNC_LOG);
+
+  const row = [
+    formatDateTime(new Date()),  // Synced At
+    entry.togglEntryId,          // Toggl Entry ID
+    qboId,                       // QBO TimeActivity ID
+    entry.date,                  // Date
+    entry.durationFormatted,     // Duration
+    entry.togglUser,             // Toggl User
+    '',                          // QBO Employee (could resolve name)
+    entry.togglClient,           // Toggl Client
+    entry.togglProject,          // Toggl Project
+    '',                          // QBO Customer
+    '',                          // QBO Project
+    entry.togglTask,             // Toggl Task
+    '',                          // QBO Service Item
+    entry.description,           // Description
+    entry.billable,              // Billable
+    status,                      // Status
+    error                        // Error
+  ];
+
+  sheet.appendRow(row);
+}
+
+/**
+ * Preview function: Shows entries that would be synced (have Approved but not Synced tag)
+ */
+function previewApprovedEntries() {
+  const approvedTag = getApprovedTagName();
+  const syncedTag = getSyncedTagName();
+  const dateRange = getImportDateRange();
+
+  showToast('Fetching entries to preview...');
+
+  const allEntries = fetchTimeEntriesAllUsers(dateRange.startDate, dateRange.endDate);
+
+  const entriesToSync = allEntries.filter(entry => {
+    const tags = entry.tags || [];
+    const hasApproved = tags.some(t => t.toLowerCase() === approvedTag.toLowerCase());
+    const hasSynced = tags.some(t => t.toLowerCase() === syncedTag.toLowerCase());
+    return hasApproved && !hasSynced;
+  });
+
+  if (entriesToSync.length === 0) {
+    showAlert(
+      `No entries found with "${approvedTag}" tag (and without "${syncedTag}" tag) in the date range ${dateRange.startDate} to ${dateRange.endDate}.\n\n` +
+      `To sync entries:\n` +
+      `1. In Toggl Track, add the "${approvedTag}" tag to time entries you want to sync\n` +
+      `2. Run "Sync Approved Entries" again`,
+      'No Entries to Sync'
+    );
+    return;
+  }
+
+  // Build summary
+  const togglLookups = buildTogglLookups();
+  let summary = `Found ${entriesToSync.length} entries to sync:\n\n`;
+
+  const maxPreview = 10;
+  entriesToSync.slice(0, maxPreview).forEach(entry => {
+    const userId = entry.user_id || entry.uid;
+    const userName = togglLookups.users[userId] || 'Unknown';
+    const projectId = entry.project_id || entry.pid;
+    const projectName = projectId ? togglLookups.projects[projectId]?.name || 'Unknown' : '(no project)';
+    const duration = formatDuration(entry.duration || entry.seconds || 0);
+    const date = formatDate(entry.start);
+
+    summary += `• ${date} - ${userName} - ${projectName} (${duration})\n`;
+  });
+
+  if (entriesToSync.length > maxPreview) {
+    summary += `\n... and ${entriesToSync.length - maxPreview} more entries`;
+  }
+
+  summary += `\n\nClick OK to proceed with sync, or Cancel to abort.`;
+
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert('Preview: Entries to Sync', summary, ui.ButtonSet.OK_CANCEL);
+
+  if (response === ui.Button.OK) {
+    syncApprovedEntries();
   }
 }

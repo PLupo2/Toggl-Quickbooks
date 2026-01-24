@@ -91,6 +91,7 @@ function refreshQBOServiceItemsMaster() {
 /**
  * Refreshes QBO Projects master list
  * Note: Projects are optional and may not be available depending on QBO subscription
+ * Projects now include customer association: [id, name, customerId, customerName]
  */
 function refreshQBOProjectsMaster() {
   logMessage('Refreshing QBO Projects master...', 'INFO');
@@ -98,12 +99,13 @@ function refreshQBOProjectsMaster() {
   const projects = getProjectsForMasterList();
   const sheet = getOrCreateSheet(CONFIG.SHEETS.QBO_PROJECTS, CONFIG.COLUMNS.QBO_PROJECTS);
 
+  // Clear existing data (projects now have 4 columns)
   if (sheet.getLastRow() > 1) {
-    sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).clear();
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).clear();
   }
 
   if (projects.length > 0) {
-    sheet.getRange(2, 1, projects.length, 2).setValues(projects);
+    sheet.getRange(2, 1, projects.length, 4).setValues(projects);
     logMessage(`Updated ${projects.length} projects in master list`, 'INFO');
   } else {
     logMessage('No QBO Projects found - this is normal if your QBO subscription does not include Projects', 'INFO');
@@ -483,6 +485,7 @@ function wireUserMappingDropdowns() {
 
 /**
  * Wires dropdowns for Client mappings
+ * Toggl Clients map to QBO Customers only (top-level, not sub-customers or projects)
  */
 function wireClientMappingDropdowns() {
   const ss = getSpreadsheet();
@@ -497,6 +500,7 @@ function wireClientMappingDropdowns() {
   const customerCount = customersSheet.getLastRow() - 1;
   if (customerCount < 1) return;
 
+  // QBO_Customers_Master now only contains top-level customers (sub-customers excluded)
   const range = customersSheet.getRange(2, 2, customerCount, 1);
   const rule = SpreadsheetApp.newDataValidation()
     .requireValueInRange(range, true)
@@ -515,6 +519,9 @@ function wireClientMappingDropdowns() {
 
 /**
  * Wires dropdowns for Project mappings
+ * Toggl Projects can map to:
+ *   - QBO Customer (required) - from QBO_Customers_Master
+ *   - QBO Project (optional) - from QBO_Projects_Master (separate from sub-customers)
  */
 function wireProjectMappingDropdowns() {
   const ss = getSpreadsheet();
@@ -527,7 +534,7 @@ function wireProjectMappingDropdowns() {
   const dataRows = sheet.getLastRow() - 1;
   if (dataRows < 1) return;
 
-  // Customer dropdown
+  // QBO Customer dropdown (from QBO_Customers_Master - top-level customers only)
   const customerCount = customersSheet.getLastRow() - 1;
   if (customerCount >= 1) {
     const customerRange = customersSheet.getRange(2, 2, customerCount, 1);
@@ -539,16 +546,18 @@ function wireProjectMappingDropdowns() {
     // QBO Customer Name column (E)
     sheet.getRange(2, 5, dataRows, 1).setDataValidation(customerRule);
 
-    // Formula for Customer ID (column D)
+    // Formula for Customer ID (column D) - lookup from customer name
     for (let row = 2; row <= sheet.getLastRow(); row++) {
       const formula = `=IF(E${row}="","",VLOOKUP(E${row},'${CONFIG.SHEETS.QBO_CUSTOMERS}'!B:A,2,FALSE))`;
       sheet.getRange(row, 4).setFormula(formula);
     }
   }
 
-  // Project dropdown (if projects exist)
+  // QBO Project dropdown (from QBO_Projects_Master - actual QBO Projects, NOT sub-customers)
+  // This is optional - only available for QBO Plus/Advanced subscriptions
   if (projectsSheet && projectsSheet.getLastRow() > 1) {
     const projectCount = projectsSheet.getLastRow() - 1;
+    // QBO_Projects_Master column B has project names
     const projectRange = projectsSheet.getRange(2, 2, projectCount, 1);
     const projectRule = SpreadsheetApp.newDataValidation()
       .requireValueInRange(projectRange, true)
@@ -558,11 +567,14 @@ function wireProjectMappingDropdowns() {
     // QBO Project Name column (G)
     sheet.getRange(2, 7, dataRows, 1).setDataValidation(projectRule);
 
-    // Formula for Project ID (column F)
+    // Formula for Project ID (column F) - lookup from project name
     for (let row = 2; row <= sheet.getLastRow(); row++) {
       const formula = `=IF(G${row}="","",VLOOKUP(G${row},'${CONFIG.SHEETS.QBO_PROJECTS}'!B:A,2,FALSE))`;
       sheet.getRange(row, 6).setFormula(formula);
     }
+  } else {
+    // Clear any existing project dropdowns if no projects available
+    sheet.getRange(2, 7, dataRows, 1).clearDataValidations();
   }
 }
 

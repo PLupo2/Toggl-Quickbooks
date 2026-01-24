@@ -84,9 +84,10 @@ function qboQuery(query) {
 
 /**
  * Fetches all customers from QBO
+ * @param {boolean} [includeSubCustomers=true] - Whether to include sub-customers
  * @returns {Object[]} Array of customer objects
  */
-function fetchQBOCustomers() {
+function fetchQBOCustomers(includeSubCustomers = true) {
   logMessage('Fetching QBO customers...', 'INFO');
 
   const customers = [];
@@ -95,7 +96,8 @@ function fetchQBOCustomers() {
   let hasMore = true;
 
   while (hasMore) {
-    const query = `SELECT Id, DisplayName, Active FROM Customer STARTPOSITION ${startPosition} MAXRESULTS ${maxResults}`;
+    // Include ParentRef to identify sub-customers
+    const query = `SELECT Id, DisplayName, Active, ParentRef FROM Customer STARTPOSITION ${startPosition} MAXRESULTS ${maxResults}`;
     const response = qboQuery(query);
 
     if (response.Customer && response.Customer.length > 0) {
@@ -107,16 +109,25 @@ function fetchQBOCustomers() {
     }
   }
 
-  logMessage(`Fetched ${customers.length} customers`, 'INFO');
+  logMessage(`Fetched ${customers.length} total customers`, 'INFO');
+
+  // Filter out sub-customers if requested
+  if (!includeSubCustomers) {
+    const topLevel = customers.filter(c => !c.ParentRef);
+    logMessage(`Filtered to ${topLevel.length} top-level customers (excluding sub-customers)`, 'INFO');
+    return topLevel;
+  }
+
   return customers;
 }
 
 /**
- * Gets active customers for master list
+ * Gets active top-level customers for master list (excludes sub-customers)
  * @returns {Array[]} Array of [id, name] pairs
  */
 function getCustomersForMasterList() {
-  const customers = fetchQBOCustomers();
+  // Exclude sub-customers - they should not be shown in Clients mapping dropdown
+  const customers = fetchQBOCustomers(false);
   return customers
     .filter(c => c.Active !== false)
     .map(c => [c.Id, c.DisplayName])
@@ -224,12 +235,12 @@ function getServiceItemsForMasterList() {
 /**
  * Fetches projects using GraphQL API
  * Note: QBO Projects require QuickBooks Online Plus or Advanced subscription
- * and the project-management.project scope (not available to all apps).
+ * and the project.readonly scope.
  * If projects return empty, it may be because:
  * 1. The QBO subscription doesn't include Projects
  * 2. No projects have been created in QBO
- * 3. The app doesn't have the required scope
- * @returns {Object[]} Array of project objects
+ * 3. The app doesn't have the required scope (need to re-authorize)
+ * @returns {Object[]} Array of project objects with customer info
  */
 function fetchQBOProjects() {
   logMessage('Fetching QBO projects via GraphQL...', 'INFO');
@@ -258,6 +269,8 @@ function fetchQBOProjects() {
       }
     `;
 
+    logMessage('Making GraphQL request to fetch projects...', 'INFO');
+
     const response = UrlFetchApp.fetch('https://public.api.intuit.com/2020-04/graphql', {
       method: 'post',
       headers: {
@@ -272,10 +285,11 @@ function fetchQBOProjects() {
     const responseBody = response.getContentText();
 
     logMessage(`GraphQL response code: ${responseCode}`, 'INFO');
+    logMessage(`GraphQL response body (first 500 chars): ${responseBody.substring(0, 500)}`, 'INFO');
 
     if (responseCode !== 200) {
       logMessage(`GraphQL projects fetch failed: ${responseCode} - ${responseBody}`, 'WARN');
-      logMessage('Projects may not be available for your QBO subscription', 'WARN');
+      logMessage('Projects may not be available. Did you re-authorize after adding project.readonly scope?', 'WARN');
       return [];
     }
 
@@ -284,61 +298,77 @@ function fetchQBOProjects() {
     if (result.errors) {
       const errorMessages = result.errors.map(e => e.message).join('; ');
       logMessage(`GraphQL errors: ${errorMessages}`, 'WARN');
-      logMessage('This is normal if your QBO subscription does not include Projects', 'INFO');
+      logMessage('Common causes: scope not granted, subscription level too low', 'INFO');
       return [];
     }
 
-    const projects = result.data?.company?.projects?.edges || [];
-    const projectList = projects
-      .map(edge => edge.node)
+    const projectsEdges = result.data?.company?.projects?.edges || [];
+    const projectList = projectsEdges
+      .map(edge => ({
+        id: edge.node.id,
+        name: edge.node.name,
+        status: edge.node.status,
+        customerId: edge.node.customer?.id || '',
+        customerName: edge.node.customer?.displayName || ''
+      }))
       .filter(p => p.status === 'ACTIVE' || p.status === 'IN_PROGRESS');
 
-    logMessage(`Fetched ${projectList.length} projects`, 'INFO');
+    logMessage(`Fetched ${projectList.length} active projects`, 'INFO');
 
-    if (projectList.length === 0) {
-      logMessage('No projects found. This could mean:', 'INFO');
-      logMessage('- No projects created in QBO yet', 'INFO');
-      logMessage('- QBO subscription does not include Projects feature', 'INFO');
-      logMessage('- App does not have project-management scope', 'INFO');
+    if (projectList.length === 0 && projectsEdges.length > 0) {
+      logMessage(`Found ${projectsEdges.length} projects but none are active`, 'INFO');
     }
 
     return projectList;
   } catch (error) {
-    logMessage(`Error fetching projects: ${error.message}`, 'WARN');
-    logMessage('Projects feature may not be available', 'INFO');
+    logMessage(`Error fetching projects: ${error.message}`, 'ERROR');
+    logMessage('Stack: ' + error.stack, 'ERROR');
     return [];
   }
 }
 
 /**
- * Shows information about QBO Projects availability
+ * Shows detailed diagnostic information about QBO Projects availability
  */
 function showProjectsInfo() {
+  showToast('Checking QBO Projects availability...');
+
   const projects = fetchQBOProjects();
 
   let message;
   if (projects.length > 0) {
-    message = `Found ${projects.length} QBO Projects.\n\nProjects are available and working correctly.`;
+    message = `Found ${projects.length} QBO Projects:\n\n`;
+    projects.slice(0, 10).forEach(p => {
+      message += `• ${p.name} (Customer: ${p.customerName || 'None'})\n`;
+    });
+    if (projects.length > 10) {
+      message += `\n... and ${projects.length - 10} more`;
+    }
+    message += '\n\nProjects are working correctly!';
   } else {
-    message = `No QBO Projects found.\n\nThis could mean:\n` +
-      `• Your QBO subscription doesn't include Projects (requires Plus or Advanced)\n` +
-      `• No projects have been created in QBO yet\n` +
-      `• The app doesn't have the project-management scope\n\n` +
-      `Note: QBO Projects are optional. You can still sync time entries ` +
-      `using Customers only (without Projects).`;
+    message = `No QBO Projects found.\n\n` +
+      `Troubleshooting steps:\n\n` +
+      `1. Check subscription: QBO Projects require Plus or Advanced plan\n\n` +
+      `2. Re-authorize: After we added the project.readonly scope, you need to:\n` +
+      `   • Run "Setup > Disconnect QuickBooks"\n` +
+      `   • Run "Setup > Connect to QuickBooks"\n` +
+      `   • Complete the OAuth flow again\n\n` +
+      `3. Create projects: Make sure you have at least one project created in QBO\n\n` +
+      `4. Check Logs sheet for detailed error messages\n\n` +
+      `Note: QBO Projects are optional. You can sync time entries using Customers only.`;
   }
 
   showAlert(message, 'QBO Projects Status');
 }
 
 /**
- * Gets active projects for master list
- * @returns {Array[]} Array of [id, name] pairs
+ * Gets active projects for master list with customer info
+ * @returns {Array[]} Array of [id, name, customerId, customerName] rows
  */
 function getProjectsForMasterList() {
   const projects = fetchQBOProjects();
   return projects
-    .map(p => [p.id, p.name])
+    .map(p => [p.id, p.name, p.customerId, p.customerName])
     .sort((a, b) => a[1].localeCompare(b[1]));
 }
 
