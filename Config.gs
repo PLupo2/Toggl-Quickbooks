@@ -501,3 +501,56 @@ function getApprovedTagName() {
 function getSyncedTagName() {
   return getConfigValue('SYNCED_TAG', CONFIG.TAGS.SYNCED);
 }
+
+/**
+ * Adds any missing config keys to the Config sheet without overwriting existing values.
+ * Run this after updating the script to add new config options.
+ */
+function syncMissingConfigKeys() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let configSheet = ss.getSheetByName(CONFIG.SHEETS.CONFIG);
+
+  if (!configSheet) {
+    // No config sheet exists, create it fresh
+    createConfigSheet(ss);
+    showToast('Config sheet created with all default values');
+    return;
+  }
+
+  // Define all expected config keys with their default values
+  const expectedConfigs = [
+    ['START_DATE', ''],
+    ['END_DATE', ''],
+    ['IMPORT_DAYS', CONFIG.DEFAULTS.IMPORT_DAYS],
+    ['BATCH_SIZE', CONFIG.DEFAULTS.BATCH_SIZE],
+    ['LAST_SYNC_DATE', ''],
+    ['SYNC_BILLABLE_ONLY', 'FALSE'],
+    ['APPROVED_TAG', CONFIG.TAGS.APPROVED],
+    ['SYNCED_TAG', CONFIG.TAGS.SYNCED],
+    ['DEFAULT_SERVICE_ITEM_ID', ''],
+    ['DEFAULT_SERVICE_ITEM_NAME', '']
+  ];
+
+  // Get existing keys
+  const data = configSheet.getDataRange().getValues();
+  const existingKeys = new Set();
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0]) {
+      existingKeys.add(data[i][0]);
+    }
+  }
+
+  // Find missing keys
+  const missingConfigs = expectedConfigs.filter(([key]) => !existingKeys.has(key));
+
+  if (missingConfigs.length === 0) {
+    showToast('All config keys are present');
+    return;
+  }
+
+  // Add missing keys at the end
+  const lastRow = configSheet.getLastRow();
+  configSheet.getRange(lastRow + 1, 1, missingConfigs.length, 2).setValues(missingConfigs);
+
+  showToast(`Added ${missingConfigs.length} missing config key(s): ${missingConfigs.map(c => c[0]).join(', ')}`);
+}

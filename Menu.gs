@@ -84,6 +84,7 @@ function createMenu() {
         .addSeparator()
         .addItem('Apply Unmapped Row Highlighting', 'applyUnmappedRowHighlighting')
         .addItem('Update Project Customer Mappings', 'updateProjectCustomerMappings')
+        .addItem('Sync Missing Config Keys', 'syncMissingConfigKeys')
         .addSeparator()
         .addItem('Debug: Customer Hierarchy', 'debugCustomerHierarchy')
         .addItem('Debug: Test Toggl Functions', 'testTogglFunctions')
