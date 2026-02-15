@@ -1,7 +1,134 @@
 /**
  * Toggl.gs - Toggl Track API calls and import logic
  * Supports both API v9 (current user) and Reports API v3 (all workspace users)
+ *
+ * API Rate Limiting:
+ * - Workspace requests: 240/hr (paid plan) - includes writes, updates, reports
+ * - Profile requests: 30/hr - personal data endpoints (/me/*)
+ * - This script tracks workspace API calls and can pause/resume if limits are hit
  */
+
+// ============================================================================
+// API RATE LIMITING & CACHING
+// ============================================================================
+
+/**
+ * In-memory cache for Toggl data within a single execution.
+ * Prevents redundant API calls for users, clients, projects, tags, tasks.
+ */
+const TOGGL_CACHE = {
+  users: null,
+  clients: null,
+  projects: null,
+  projectsIncludingArchived: null,
+  tags: null,
+  tasks: {},  // Keyed by projectId
+  allTasks: null,  // All tasks from mapping sheet
+  workspaceId: null
+};
+
+/**
+ * API call counter for rate limiting awareness.
+ * Tracks calls made during current execution.
+ */
+const API_COUNTER = {
+  workspaceCalls: 0,
+  profileCalls: 0,
+  startTime: Date.now()
+};
+
+// Default budget (can be overridden in Config)
+const DEFAULT_API_BUDGET = 180;  // Conservative limit, leaving buffer for other tools
+
+/**
+ * Gets the API call budget from config or default
+ * @returns {number} Maximum workspace API calls allowed per execution
+ */
+function getApiBudget() {
+  return parseInt(getConfigValue('TOGGL_API_BUDGET', DEFAULT_API_BUDGET), 10);
+}
+
+/**
+ * Checks if we're approaching the API limit
+ * @param {number} [callsNeeded=1] - Number of calls about to be made
+ * @returns {boolean} True if we should stop to avoid hitting limit
+ */
+function isApproachingApiLimit(callsNeeded = 1) {
+  const budget = getApiBudget();
+  return (API_COUNTER.workspaceCalls + callsNeeded) > budget;
+}
+
+/**
+ * Increments the API call counter
+ * @param {string} [type='workspace'] - 'workspace' or 'profile'
+ */
+function incrementApiCounter(type = 'workspace') {
+  if (type === 'profile') {
+    API_COUNTER.profileCalls++;
+  } else {
+    API_COUNTER.workspaceCalls++;
+  }
+}
+
+/**
+ * Gets current API usage stats
+ * @returns {Object} Current call counts and budget
+ */
+function getApiUsageStats() {
+  const budget = getApiBudget();
+  const elapsed = Math.round((Date.now() - API_COUNTER.startTime) / 1000);
+  return {
+    workspaceCalls: API_COUNTER.workspaceCalls,
+    profileCalls: API_COUNTER.profileCalls,
+    budget: budget,
+    remaining: budget - API_COUNTER.workspaceCalls,
+    elapsedSeconds: elapsed
+  };
+}
+
+/**
+ * Shows API usage in a dialog (callable from menu)
+ */
+function showApiUsage() {
+  const stats = getApiUsageStats();
+
+  // Also try to get persisted stats from last sync
+  const lastSyncCalls = getConfigValue('LAST_SYNC_API_CALLS', '');
+  const lastSyncTime = getConfigValue('LAST_SYNC_DATE', '');
+
+  let message = `Current Execution:\n`;
+  message += `  Workspace API calls: ${stats.workspaceCalls} / ${stats.budget}\n`;
+  message += `  Profile API calls: ${stats.profileCalls} / 30\n`;
+  message += `  Remaining budget: ${stats.remaining}\n`;
+  message += `  Elapsed: ${stats.elapsedSeconds}s\n\n`;
+
+  if (lastSyncCalls) {
+    message += `Last Sync Operation:\n`;
+    message += `  API calls used: ${lastSyncCalls}\n`;
+    message += `  Time: ${lastSyncTime}\n`;
+  }
+
+  message += `\nNote: Toggl rate limit is 240 workspace requests/hour.\n`;
+  message += `Budget is set conservatively to leave room for other tools.\n`;
+  message += `Adjust TOGGL_API_BUDGET in Config to change.`;
+
+  showAlert(message, 'Toggl API Usage');
+}
+
+/**
+ * Clears the in-memory cache (useful for testing or forced refresh)
+ */
+function clearTogglCache() {
+  TOGGL_CACHE.users = null;
+  TOGGL_CACHE.clients = null;
+  TOGGL_CACHE.projects = null;
+  TOGGL_CACHE.projectsIncludingArchived = null;
+  TOGGL_CACHE.tags = null;
+  TOGGL_CACHE.tasks = {};
+  TOGGL_CACHE.allTasks = null;
+  TOGGL_CACHE.workspaceId = null;
+  logMessage('Toggl cache cleared', 'INFO');
+}
 
 /**
  * Diagnostic function to verify Toggl.gs is loaded correctly
@@ -44,9 +171,17 @@ const TOGGL_REPORTS_V3_BASE = 'https://api.track.toggl.com/reports/api/v3';
  * Makes an authenticated request to Toggl API v9
  * @param {string} endpoint - API endpoint
  * @param {Object} [options] - Request options
+ * @param {Object} [options.skipBudgetCheck] - Skip budget check for critical calls
  * @returns {Object} Parsed JSON response
  */
 function togglApiV9(endpoint, options = {}) {
+  // Check API budget before making call (unless explicitly skipped)
+  if (!options.skipBudgetCheck && isApproachingApiLimit()) {
+    const stats = getApiUsageStats();
+    throw new Error(`API budget exhausted (${stats.workspaceCalls}/${stats.budget} calls). ` +
+      `Wait for rate limit reset or increase TOGGL_API_BUDGET in Config.`);
+  }
+
   const authHeader = getTogglAuthHeader();
   const url = `${TOGGL_API_V9_BASE}${endpoint}`;
 
@@ -64,11 +199,20 @@ function togglApiV9(endpoint, options = {}) {
     requestOptions.headers = { ...defaultOptions.headers, ...options.headers };
   }
 
-  logMessage(`Toggl API v9: ${requestOptions.method.toUpperCase()} ${endpoint}`, 'INFO');
+  // Track API call - profile endpoints use /me, workspace endpoints don't
+  const isProfileCall = endpoint.startsWith('/me');
+  incrementApiCounter(isProfileCall ? 'profile' : 'workspace');
+
+  logMessage(`Toggl API v9: ${requestOptions.method.toUpperCase()} ${endpoint} [calls: ${API_COUNTER.workspaceCalls}]`, 'INFO');
 
   const response = UrlFetchApp.fetch(url, requestOptions);
   const responseCode = response.getResponseCode();
   const responseBody = response.getContentText();
+
+  if (responseCode === 429) {
+    logMessage(`Toggl API rate limited! Consider reducing operations.`, 'ERROR');
+    throw new Error(`Toggl API rate limited (429). Wait for limit reset.`);
+  }
 
   if (responseCode !== 200) {
     logMessage(`Toggl API Error: ${responseCode} - ${responseBody}`, 'ERROR');
@@ -82,14 +226,23 @@ function togglApiV9(endpoint, options = {}) {
  * Makes an authenticated request to Toggl Reports API v3
  * @param {string} endpoint - API endpoint
  * @param {Object} payload - Request payload
+ * @param {Object} [options] - Additional options
+ * @param {boolean} [options.skipBudgetCheck] - Skip budget check for critical calls
  * @returns {Object} Parsed JSON response
  */
-function togglReportsV3(endpoint, payload) {
+function togglReportsV3(endpoint, payload, options = {}) {
+  // Check API budget before making call
+  if (!options.skipBudgetCheck && isApproachingApiLimit()) {
+    const stats = getApiUsageStats();
+    throw new Error(`API budget exhausted (${stats.workspaceCalls}/${stats.budget} calls). ` +
+      `Wait for rate limit reset or increase TOGGL_API_BUDGET in Config.`);
+  }
+
   const authHeader = getTogglAuthHeader();
   const workspaceId = getOrFetchWorkspaceId();
   const url = `${TOGGL_REPORTS_V3_BASE}/workspace/${workspaceId}${endpoint}`;
 
-  const options = {
+  const requestOptions = {
     method: 'post',
     headers: {
       'Authorization': `Basic ${authHeader}`,
@@ -99,11 +252,19 @@ function togglReportsV3(endpoint, payload) {
     muteHttpExceptions: true
   };
 
-  logMessage(`Toggl Reports API: POST ${endpoint}`, 'INFO');
+  // Track API call (Reports API = workspace calls)
+  incrementApiCounter('workspace');
 
-  const response = UrlFetchApp.fetch(url, options);
+  logMessage(`Toggl Reports API: POST ${endpoint} [calls: ${API_COUNTER.workspaceCalls}]`, 'INFO');
+
+  const response = UrlFetchApp.fetch(url, requestOptions);
   const responseCode = response.getResponseCode();
   const responseBody = response.getContentText();
+
+  if (responseCode === 429) {
+    logMessage(`Toggl Reports API rate limited!`, 'ERROR');
+    throw new Error(`Toggl Reports API rate limited (429). Wait for limit reset.`);
+  }
 
   if (responseCode !== 200) {
     logMessage(`Toggl Reports API Error: ${responseCode} - ${responseBody}`, 'ERROR');
@@ -175,34 +336,43 @@ function extractDurationSeconds(entry) {
 // ============================================================================
 
 /**
- * Fetches all tags in the workspace
+ * Fetches all tags in the workspace (with caching)
+ * @param {boolean} [forceRefresh=false] - Force API call even if cached
  * @returns {Object[]} Array of tag objects
  */
-function fetchTogglTags() {
+function fetchTogglTags(forceRefresh = false) {
+  // Return cached if available
+  if (!forceRefresh && TOGGL_CACHE.tags !== null) {
+    logMessage(`Using cached tags (${TOGGL_CACHE.tags.length} tags)`, 'INFO');
+    return TOGGL_CACHE.tags;
+  }
+
   const workspaceId = getOrFetchWorkspaceId();
   logMessage('Fetching Toggl tags...', 'INFO');
 
   try {
     const tags = togglApiV9(`/workspaces/${workspaceId}/tags`);
+    TOGGL_CACHE.tags = tags;  // Cache the result
     logMessage(`Fetched ${tags.length} tags`, 'INFO');
     return tags;
   } catch (error) {
     logMessage(`Error fetching tags: ${error.message}`, 'WARN');
-    return [];
+    return TOGGL_CACHE.tags || [];  // Return cache if available, else empty
   }
 }
 
 /**
- * Creates a tag in Toggl if it doesn't exist
+ * Creates a tag in Toggl if it doesn't exist (uses cache)
  * @param {string} tagName - Name of the tag to create
  * @returns {Object} Created or existing tag object
  */
 function ensureTagExists(tagName) {
   const workspaceId = getOrFetchWorkspaceId();
-  const existingTags = fetchTogglTags();
+  const existingTags = fetchTogglTags();  // Uses cache if available
 
   const existing = existingTags.find(t => t.name.toLowerCase() === tagName.toLowerCase());
   if (existing) {
+    logMessage(`Tag "${tagName}" already exists`, 'INFO');
     return existing;
   }
 
@@ -213,6 +383,12 @@ function ensureTagExists(tagName) {
       method: 'post',
       payload: JSON.stringify({ name: tagName })
     });
+
+    // Update cache with new tag
+    if (TOGGL_CACHE.tags) {
+      TOGGL_CACHE.tags.push(tag);
+    }
+
     return tag;
   } catch (error) {
     logMessage(`Error creating tag: ${error.message}`, 'ERROR');
@@ -246,31 +422,71 @@ function addTagToTimeEntry(entryId, tagName) {
 }
 
 /**
- * Adds a tag to multiple time entries
+ * Adds a tag to multiple time entries using batch API.
+ * Uses Toggl's bulk PATCH endpoint to tag up to 100 entries per API call.
  * @param {number[]} entryIds - Array of time entry IDs
  * @param {string} tagName - Tag name to add
  * @returns {Object} Results with success and failure counts
  */
 function addTagToMultipleEntries(entryIds, tagName) {
   const workspaceId = getOrFetchWorkspaceId();
-  const results = { success: 0, failed: 0, errors: [] };
+  const results = { success: 0, failed: 0, errors: [], apiCalls: 0 };
 
-  // Ensure tag exists first
-  ensureTagExists(tagName);
-
-  for (const entryId of entryIds) {
-    try {
-      addTagToTimeEntry(entryId, tagName);
-      results.success++;
-    } catch (error) {
-      results.failed++;
-      results.errors.push({ entryId, error: error.message });
-      logMessage(`Failed to add tag to entry ${entryId}: ${error.message}`, 'WARN');
-    }
-    // Small delay to avoid rate limiting
-    Utilities.sleep(100);
+  if (!entryIds || entryIds.length === 0) {
+    return results;
   }
 
+  // Ensure tag exists first (1 API call if tag needs to be created, 0 if cached)
+  ensureTagExists(tagName);
+
+  // Toggl bulk endpoint supports up to ~100 IDs per request
+  const BATCH_SIZE = 100;
+
+  for (let i = 0; i < entryIds.length; i += BATCH_SIZE) {
+    const batch = entryIds.slice(i, i + BATCH_SIZE);
+    const idsString = batch.join(',');
+
+    try {
+      // Use bulk PATCH endpoint: /workspaces/{id}/time_entries/{id1,id2,id3,...}
+      const endpoint = `/workspaces/${workspaceId}/time_entries/${idsString}`;
+
+      togglApiV9(endpoint, {
+        method: 'patch',
+        payload: JSON.stringify({
+          tags: [tagName],
+          tag_action: 'add'
+        })
+      });
+
+      results.success += batch.length;
+      results.apiCalls++;
+      logMessage(`Batch tagged ${batch.length} entries (batch ${Math.floor(i/BATCH_SIZE) + 1})`, 'INFO');
+
+    } catch (error) {
+      // If batch fails, fall back to individual tagging for this batch
+      logMessage(`Batch tagging failed, falling back to individual: ${error.message}`, 'WARN');
+
+      for (const entryId of batch) {
+        try {
+          addTagToTimeEntry(entryId, tagName);
+          results.success++;
+          results.apiCalls++;
+        } catch (innerError) {
+          results.failed++;
+          results.errors.push({ entryId, error: innerError.message });
+          logMessage(`Failed to add tag to entry ${entryId}: ${innerError.message}`, 'WARN');
+        }
+        Utilities.sleep(100);
+      }
+    }
+
+    // Small delay between batches
+    if (i + BATCH_SIZE < entryIds.length) {
+      Utilities.sleep(200);
+    }
+  }
+
+  logMessage(`Tagging complete: ${results.success} succeeded, ${results.failed} failed, ${results.apiCalls} API calls`, 'INFO');
   return results;
 }
 
@@ -279,14 +495,21 @@ function addTagToMultipleEntries(entryIds, tagName) {
 // ============================================================================
 
 /**
- * Gets or fetches the workspace ID
+ * Gets or fetches the workspace ID (with caching)
  * @returns {string} Workspace ID
  */
 function getOrFetchWorkspaceId() {
+  // Check in-memory cache first
+  if (TOGGL_CACHE.workspaceId) {
+    return TOGGL_CACHE.workspaceId;
+  }
+
+  // Then check script properties
   let workspaceId = getTogglWorkspaceId();
 
   if (!workspaceId) {
-    const me = togglApiV9('/me');
+    // Skip budget check for this critical call
+    const me = togglApiV9('/me', { skipBudgetCheck: true });
     if (me.default_workspace_id) {
       workspaceId = String(me.default_workspace_id);
       setScriptProperty('TOGGL_WORKSPACE_ID', workspaceId);
@@ -296,6 +519,7 @@ function getOrFetchWorkspaceId() {
     }
   }
 
+  TOGGL_CACHE.workspaceId = workspaceId;
   return workspaceId;
 }
 
@@ -312,15 +536,26 @@ function fetchWorkspaces() {
 // ============================================================================
 
 /**
- * Fetches all users in the workspace
+ * Fetches all users in the workspace (with caching)
  * @param {boolean} [activeOnly=true] - Only return active users
+ * @param {boolean} [forceRefresh=false] - Force API call even if cached
  * @returns {Object[]} Array of user objects
  */
-function fetchTogglUsers(activeOnly = true) {
+function fetchTogglUsers(activeOnly = true, forceRefresh = false) {
+  // Return cached if available
+  if (!forceRefresh && TOGGL_CACHE.users !== null) {
+    const filteredUsers = activeOnly
+      ? TOGGL_CACHE.users.filter(u => !u.inactive && u.active !== false)
+      : TOGGL_CACHE.users;
+    logMessage(`Using cached users (${filteredUsers.length} users)`, 'INFO');
+    return filteredUsers;
+  }
+
   const workspaceId = getOrFetchWorkspaceId();
   logMessage('Fetching Toggl workspace users...', 'INFO');
 
   const users = togglApiV9(`/workspaces/${workspaceId}/users`);
+  TOGGL_CACHE.users = users;  // Cache all users
 
   // Filter to active users only if requested
   // Toggl API: inactive field is true for deactivated users
@@ -351,14 +586,22 @@ function getUsersForMapping() {
 // ============================================================================
 
 /**
- * Fetches all clients in the workspace
+ * Fetches all clients in the workspace (with caching)
+ * @param {boolean} [forceRefresh=false] - Force API call even if cached
  * @returns {Object[]} Array of client objects
  */
-function fetchTogglClients() {
+function fetchTogglClients(forceRefresh = false) {
+  // Return cached if available
+  if (!forceRefresh && TOGGL_CACHE.clients !== null) {
+    logMessage(`Using cached clients (${TOGGL_CACHE.clients.length} clients)`, 'INFO');
+    return TOGGL_CACHE.clients;
+  }
+
   const workspaceId = getOrFetchWorkspaceId();
   logMessage('Fetching Toggl clients...', 'INFO');
 
   const clients = togglApiV9(`/workspaces/${workspaceId}/clients`);
+  TOGGL_CACHE.clients = clients;  // Cache the result
   logMessage(`Fetched ${clients.length} clients`, 'INFO');
 
   return clients;
@@ -388,25 +631,49 @@ function getClientsForMapping() {
 // ============================================================================
 
 /**
- * Fetches all projects in the workspace
+ * Fetches all projects in the workspace (with caching)
  * @param {boolean} [activeOnly=true] - Only fetch active projects
+ * @param {boolean} [forceRefresh=false] - Force API call even if cached
  * @returns {Object[]} Array of project objects
  */
-function fetchTogglProjects(activeOnly = true) {
+function fetchTogglProjects(activeOnly = true, forceRefresh = false) {
   const workspaceId = getOrFetchWorkspaceId();
+
+  // Check cache based on what we're requesting
+  if (!forceRefresh) {
+    if (activeOnly && TOGGL_CACHE.projects !== null) {
+      logMessage(`Using cached active projects (${TOGGL_CACHE.projects.length} projects)`, 'INFO');
+      return TOGGL_CACHE.projects;
+    }
+    if (!activeOnly && TOGGL_CACHE.projectsIncludingArchived !== null) {
+      logMessage(`Using cached all projects (${TOGGL_CACHE.projectsIncludingArchived.length} projects)`, 'INFO');
+      return TOGGL_CACHE.projectsIncludingArchived;
+    }
+  }
+
   logMessage('Fetching Toggl projects...', 'INFO');
 
   if (activeOnly) {
     // Only active projects
     const endpoint = `/workspaces/${workspaceId}/projects?active=true`;
     const projects = togglApiV9(endpoint);
+    TOGGL_CACHE.projects = projects;  // Cache active projects
     logMessage(`Fetched ${projects.length} active projects`, 'INFO');
     return projects;
   } else {
     // Fetch BOTH active and archived projects
     // Toggl API requires separate calls for active=true and active=false
-    const activeEndpoint = `/workspaces/${workspaceId}/projects?active=true`;
-    const activeProjects = togglApiV9(activeEndpoint);
+
+    // Use cached active projects if available to save an API call
+    let activeProjects;
+    if (TOGGL_CACHE.projects !== null) {
+      activeProjects = TOGGL_CACHE.projects;
+      logMessage(`Using cached active projects`, 'INFO');
+    } else {
+      const activeEndpoint = `/workspaces/${workspaceId}/projects?active=true`;
+      activeProjects = togglApiV9(activeEndpoint);
+      TOGGL_CACHE.projects = activeProjects;
+    }
 
     // Try to fetch archived projects (requires paid Toggl plan)
     let archivedProjects = [];
@@ -417,12 +684,15 @@ function fetchTogglProjects(activeOnly = true) {
       // 402 = Payment Required - archived projects need paid plan
       if (e.message.includes('402')) {
         logMessage('Archived projects require paid Toggl plan - using active projects only', 'WARN');
+      } else if (e.message.includes('budget exhausted')) {
+        logMessage('API budget exhausted fetching archived projects - using active only', 'WARN');
       } else {
         logMessage(`Could not fetch archived projects: ${e.message}`, 'WARN');
       }
     }
 
     const allProjects = [...activeProjects, ...archivedProjects];
+    TOGGL_CACHE.projectsIncludingArchived = allProjects;  // Cache all projects
     logMessage(`Fetched ${allProjects.length} projects (${activeProjects.length} active, ${archivedProjects.length} archived)`, 'INFO');
     return allProjects;
   }
@@ -463,13 +733,21 @@ function getProjectsForMapping() {
 // ============================================================================
 
 /**
- * Fetches all tasks for a project
+ * Fetches all tasks for a project (with caching)
  * @param {number} projectId - Project ID
+ * @param {boolean} [forceRefresh=false] - Force API call even if cached
  * @returns {Object[]} Array of task objects
  */
-function fetchTogglTasksForProject(projectId) {
+function fetchTogglTasksForProject(projectId, forceRefresh = false) {
+  // Check cache first
+  if (!forceRefresh && TOGGL_CACHE.tasks[projectId] !== undefined) {
+    return TOGGL_CACHE.tasks[projectId];
+  }
+
   const workspaceId = getOrFetchWorkspaceId();
-  return togglApiV9(`/workspaces/${workspaceId}/projects/${projectId}/tasks`);
+  const tasks = togglApiV9(`/workspaces/${workspaceId}/projects/${projectId}/tasks`);
+  TOGGL_CACHE.tasks[projectId] = tasks;  // Cache the result
+  return tasks;
 }
 
 /**
@@ -762,10 +1040,16 @@ function getExistingEntryIds() {
 }
 
 /**
- * Builds lookup maps for Toggl entities
+ * Builds lookup maps for Toggl entities.
+ * Uses caching and can optionally read tasks from the mapping sheet to save API calls.
+ * @param {Object} [options] - Options
+ * @param {boolean} [options.useSheetForTasks=true] - Read tasks from Mappings_Tasks sheet instead of API
  * @returns {Object} Lookup maps for users, clients, projects, tasks, tags
  */
-function buildTogglLookups() {
+function buildTogglLookups(options = {}) {
+  const useSheetForTasks = options.useSheetForTasks !== false;  // Default true
+
+  // These will use cache if available (no extra API calls on repeated use)
   const users = fetchTogglUsers();
   const clients = fetchTogglClients();
   const projects = fetchTogglProjects(false); // Include inactive for historical data
@@ -801,20 +1085,62 @@ function buildTogglLookups() {
     lookups.tags[t.name] = t.name; // Also map name to name for string tags
   });
 
-  // Fetch tasks for each project
-  projects.forEach(p => {
-    try {
-      const tasks = fetchTogglTasksForProject(p.id);
-      tasks.forEach(t => {
-        lookups.tasks[t.id] = t.name;
-      });
-    } catch (e) {
-      // Ignore errors for individual projects
-    }
-    Utilities.sleep(25);
-  });
+  // Get tasks - either from mapping sheet (0 API calls) or from API (P calls)
+  if (useSheetForTasks) {
+    // Read tasks from the Mappings_Tasks_Services sheet - saves P API calls!
+    const taskMappings = getTasksFromMappingSheet();
+    taskMappings.forEach(t => {
+      if (t.togglTaskId) {
+        lookups.tasks[t.togglTaskId] = t.togglTaskName;
+      }
+    });
+    logMessage(`Loaded ${taskMappings.length} tasks from mapping sheet (0 API calls)`, 'INFO');
+  } else {
+    // Fetch tasks from API for each project (expensive - P API calls)
+    logMessage(`Fetching tasks from API for ${projects.length} projects...`, 'INFO');
+    projects.forEach(p => {
+      try {
+        const tasks = fetchTogglTasksForProject(p.id);
+        tasks.forEach(t => {
+          lookups.tasks[t.id] = t.name;
+        });
+      } catch (e) {
+        // Ignore errors for individual projects (could be budget exhausted)
+        if (e.message.includes('budget exhausted')) {
+          logMessage('API budget exhausted while fetching tasks', 'WARN');
+          return; // Stop the loop
+        }
+      }
+      Utilities.sleep(25);
+    });
+  }
 
   return lookups;
+}
+
+/**
+ * Reads task data from the Mappings_Tasks_Services sheet.
+ * Used as an alternative to fetching from API to save API calls.
+ * @returns {Object[]} Array of {togglTaskId, togglTaskName, projectName, clientName}
+ */
+function getTasksFromMappingSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(CONFIG.SHEETS.MAPPINGS_TASKS);
+
+  if (!sheet || sheet.getLastRow() <= 1) {
+    return [];
+  }
+
+  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getValues();
+
+  return data
+    .filter(row => row[0])  // Has Toggl Task ID
+    .map(row => ({
+      togglTaskId: row[0],
+      togglTaskName: row[1] || '',
+      projectName: row[2] || '',
+      clientName: row[3] || ''
+    }));
 }
 
 /**
@@ -1008,10 +1334,38 @@ function importCurrentUserEntries() {
 /**
  * Main sync function: Fetches Toggl entries with "Approved" tag (but not "Synced"),
  * syncs them to QBO, then adds "Synced" tag back to Toggl.
+ *
+ * Features:
+ * - Uses in-memory cache to reduce API calls
+ * - Reads tasks from mapping sheet instead of API
+ * - Uses batch tagging (1 API call per 100 entries)
+ * - Can pause and auto-resume if API budget is exhausted
+ *
  * @returns {Object} Sync results
  */
 function syncApprovedEntries() {
   logMessage('Starting sync of approved entries...', 'INFO');
+  logMessage(`API budget: ${getApiBudget()} calls`, 'INFO');
+
+  // Check for pending sync and offer to resume
+  if (hasPendingSync()) {
+    const ui = SpreadsheetApp.getUi();
+    const response = ui.alert(
+      'Pending Sync Found',
+      'There is a pending sync operation that was paused.\n\n' +
+      'Would you like to resume it?\n' +
+      '(Click No to start a fresh sync)',
+      ui.ButtonSet.YES_NO
+    );
+
+    if (response === ui.Button.YES) {
+      resumePendingSync();
+      return;
+    } else {
+      clearSyncState();
+    }
+  }
+
   showToast('Syncing approved entries to QuickBooks...');
 
   const approvedTag = getApprovedTagName();
@@ -1021,7 +1375,7 @@ function syncApprovedEntries() {
   const dateRange = getImportDateRange();
   logMessage(`Date range: ${dateRange.startDate} to ${dateRange.endDate}`, 'INFO');
 
-  // Build tag lookup to convert tag IDs to names
+  // Build tag lookup to convert tag IDs to names (uses cache)
   const tags = fetchTogglTags();
   const tagLookup = {};
   tags.forEach(t => {
@@ -1043,12 +1397,13 @@ function syncApprovedEntries() {
   logMessage(`Found ${entriesToSync.length} entries with "${approvedTag}" tag (without "${syncedTag}")`, 'INFO');
 
   if (entriesToSync.length === 0) {
-    showToast(`No entries found with "${approvedTag}" tag to sync.`);
+    const stats = getApiUsageStats();
+    showToast(`No entries found with "${approvedTag}" tag to sync. (Used ${stats.workspaceCalls} API calls)`);
     return { synced: 0, failed: 0, skipped: 0 };
   }
 
-  // Build lookups for Toggl data
-  const togglLookups = buildTogglLookups();
+  // Build lookups for Toggl data (uses cache, reads tasks from sheet)
+  const togglLookups = buildTogglLookups({ useSheetForTasks: true });
 
   // Build mapping lookups for QBO resolution
   const mappings = buildMappingLookups();
@@ -1062,7 +1417,18 @@ function syncApprovedEntries() {
     syncedEntryIds: []
   };
 
+  const pendingEntryIds = [];
+
   for (const entry of entriesToSync) {
+    const entryId = entry.id || entry.time_entry_id;
+
+    // Check API budget before processing (reserve calls for tagging)
+    if (isApproachingApiLimit(5)) {
+      pendingEntryIds.push(entryId);
+      logMessage(`API budget low, deferring entry ${entryId}`, 'WARN');
+      continue;
+    }
+
     try {
       const processed = processTimeEntry(entry, togglLookups);
       const syncResult = syncSingleEntry(processed, mappings);
@@ -1081,27 +1447,59 @@ function syncApprovedEntries() {
         logSyncResult(processed, '', 'Failed', syncResult.error);
       }
     } catch (error) {
-      const entryId = entry.id || entry.time_entry_id;
-      results.failed++;
-      results.errors.push({ entryId, error: error.message });
-      logMessage(`Error processing entry ${entryId}: ${error.message}`, 'ERROR');
+      // Check if it's a budget exhaustion error
+      if (error.message.includes('budget exhausted') || error.message.includes('rate limited')) {
+        pendingEntryIds.push(entryId);
+        logMessage(`API limit reached, deferring entry ${entryId}`, 'WARN');
+      } else {
+        results.failed++;
+        results.errors.push({ entryId, error: error.message });
+        logMessage(`Error processing entry ${entryId}: ${error.message}`, 'ERROR');
+      }
     }
 
-    // Rate limiting
+    // Rate limiting between QBO calls
     Utilities.sleep(100);
   }
 
-  // Add "Synced" tag to successfully synced entries
-  if (results.syncedEntryIds.length > 0) {
-    logMessage(`Adding "${syncedTag}" tag to ${results.syncedEntryIds.length} entries...`, 'INFO');
-    const tagResults = addTagToMultipleEntries(results.syncedEntryIds, syncedTag);
-    logMessage(`Tagged ${tagResults.success} entries, ${tagResults.failed} failed`, 'INFO');
+  // Check if we need to pause and resume later
+  if (pendingEntryIds.length > 0) {
+    const state = {
+      pendingEntryIds,
+      syncedEntryIds: results.syncedEntryIds,
+      totalSynced: results.synced,
+      totalFailed: results.failed,
+      pausedAt: formatDateTime(new Date())
+    };
+    saveSyncState(state);
+    scheduleResume(65);
+
+    const stats = getApiUsageStats();
+    setConfigValue('LAST_SYNC_API_CALLS', stats.workspaceCalls);
+
+    const message = `Sync paused: ${results.synced} synced, ${results.failed} failed, ` +
+      `${pendingEntryIds.length} pending.\n\nWill auto-resume in ~65 minutes when rate limit resets.\n` +
+      `API calls used: ${stats.workspaceCalls}`;
+    logMessage(message, 'INFO');
+    showAlert(message, 'Sync Paused');
+
+    return results;
   }
 
-  // Update last sync date
+  // All entries processed - add "Synced" tag using batch endpoint
+  if (results.syncedEntryIds.length > 0) {
+    logMessage(`Adding "${syncedTag}" tag to ${results.syncedEntryIds.length} entries (batch)...`, 'INFO');
+    const tagResults = addTagToMultipleEntries(results.syncedEntryIds, syncedTag);
+    logMessage(`Tagged ${tagResults.success} entries with ${tagResults.apiCalls} API calls`, 'INFO');
+  }
+
+  // Save API usage stats
+  const stats = getApiUsageStats();
+  setConfigValue('LAST_SYNC_API_CALLS', stats.workspaceCalls);
   setConfigValue('LAST_SYNC_DATE', formatDateTime(new Date()));
 
-  const message = `Sync complete: ${results.synced} synced, ${results.failed} failed`;
+  const message = `Sync complete: ${results.synced} synced, ${results.failed} failed\n` +
+    `API calls used: ${stats.workspaceCalls} / ${stats.budget}`;
   logMessage(message, 'INFO');
   showAlert(message, 'Sync Complete');
 
@@ -1314,4 +1712,298 @@ function previewApprovedEntries() {
   if (response === ui.Button.OK) {
     syncApprovedEntries();
   }
+}
+
+// ============================================================================
+// SYNC PAUSE/RESUME INFRASTRUCTURE
+// ============================================================================
+
+/**
+ * Saves sync state for later resumption.
+ * Called when API budget is exhausted mid-sync.
+ * @param {Object} state - State to save
+ */
+function saveSyncState(state) {
+  const stateJson = JSON.stringify(state);
+  setScriptProperty('SYNC_PENDING_STATE', stateJson);
+  setConfigValue('SYNC_STATUS', 'Paused - waiting for rate limit reset');
+  logMessage(`Saved sync state: ${state.pendingEntryIds.length} entries pending, ${state.syncedEntryIds.length} synced`, 'INFO');
+}
+
+/**
+ * Loads saved sync state.
+ * @returns {Object|null} Saved state or null if none
+ */
+function loadSyncState() {
+  const stateJson = getScriptProperty('SYNC_PENDING_STATE');
+  if (!stateJson) return null;
+
+  try {
+    return JSON.parse(stateJson);
+  } catch (e) {
+    logMessage(`Error parsing sync state: ${e.message}`, 'WARN');
+    return null;
+  }
+}
+
+/**
+ * Clears saved sync state.
+ */
+function clearSyncState() {
+  deleteScriptProperty('SYNC_PENDING_STATE');
+  setConfigValue('SYNC_STATUS', '');
+  logMessage('Cleared sync state', 'INFO');
+}
+
+/**
+ * Checks if there's a pending sync to resume.
+ * @returns {boolean} True if there's a pending sync
+ */
+function hasPendingSync() {
+  return !!getScriptProperty('SYNC_PENDING_STATE');
+}
+
+/**
+ * Shows sync status including any pending operations.
+ */
+function showSyncState() {
+  const state = loadSyncState();
+  const apiStats = getApiUsageStats();
+
+  let message = `API Usage (this execution):\n`;
+  message += `  Workspace calls: ${apiStats.workspaceCalls} / ${apiStats.budget}\n`;
+  message += `  Remaining: ${apiStats.remaining}\n\n`;
+
+  if (state) {
+    message += `Pending Sync Operation:\n`;
+    message += `  Entries to sync: ${state.pendingEntryIds?.length || 0}\n`;
+    message += `  Already synced: ${state.syncedEntryIds?.length || 0}\n`;
+    message += `  Paused at: ${state.pausedAt || 'Unknown'}\n\n`;
+    message += `Run "Resume Pending Sync" to continue when rate limit resets.`;
+  } else {
+    message += `No pending sync operations.`;
+  }
+
+  showAlert(message, 'Sync State');
+}
+
+/**
+ * Creates a time-based trigger to resume sync after rate limit reset.
+ * @param {number} [delayMinutes=65] - Minutes until trigger fires (default 65 for hourly reset + buffer)
+ */
+function scheduleResume(delayMinutes = 65) {
+  // Remove any existing resume triggers
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'resumePendingSync') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+
+  // Create new trigger
+  const triggerTime = new Date(Date.now() + delayMinutes * 60 * 1000);
+  ScriptApp.newTrigger('resumePendingSync')
+    .timeBased()
+    .at(triggerTime)
+    .create();
+
+  logMessage(`Scheduled resume for ${triggerTime.toLocaleString()} (${delayMinutes} minutes)`, 'INFO');
+  showToast(`Sync paused. Will auto-resume in ${delayMinutes} minutes.`);
+}
+
+/**
+ * Resumes a pending sync operation.
+ * Can be called manually or by a time-based trigger.
+ */
+function resumePendingSync() {
+  const state = loadSyncState();
+
+  if (!state) {
+    logMessage('No pending sync to resume', 'INFO');
+    showToast('No pending sync to resume.');
+    return;
+  }
+
+  logMessage(`Resuming sync: ${state.pendingEntryIds?.length || 0} entries pending`, 'INFO');
+  showToast('Resuming sync operation...');
+
+  try {
+    // Continue syncing the pending entries
+    const result = syncApprovedEntriesWithState(state);
+
+    if (result.completed) {
+      clearSyncState();
+      showAlert(
+        `Sync resumed and completed!\n\n` +
+        `Total synced: ${result.totalSynced}\n` +
+        `Failed: ${result.totalFailed}\n` +
+        `API calls used: ${API_COUNTER.workspaceCalls}`,
+        'Sync Complete'
+      );
+    }
+    // If not completed, syncApprovedEntriesWithState will have saved state and scheduled another resume
+  } catch (error) {
+    logMessage(`Error resuming sync: ${error.message}`, 'ERROR');
+    showAlert(`Error resuming sync: ${error.message}`, 'Resume Error');
+  }
+}
+
+/**
+ * Cancels a pending sync and clears the state.
+ */
+function cancelPendingSync() {
+  if (!hasPendingSync()) {
+    showToast('No pending sync to cancel.');
+    return;
+  }
+
+  // Remove resume triggers
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'resumePendingSync') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+
+  clearSyncState();
+  showToast('Pending sync cancelled.');
+}
+
+/**
+ * Internal sync function that works with saved state for pause/resume.
+ * @param {Object} [existingState] - Existing state to resume from
+ * @returns {Object} Result with completed status and counts
+ */
+function syncApprovedEntriesWithState(existingState = null) {
+  const approvedTag = getApprovedTagName();
+  const syncedTag = getSyncedTagName();
+
+  let pendingEntryIds, syncedEntryIds, totalSynced, totalFailed;
+
+  if (existingState) {
+    // Resume from saved state
+    pendingEntryIds = existingState.pendingEntryIds || [];
+    syncedEntryIds = existingState.syncedEntryIds || [];
+    totalSynced = existingState.totalSynced || 0;
+    totalFailed = existingState.totalFailed || 0;
+    logMessage(`Resuming with ${pendingEntryIds.length} pending entries`, 'INFO');
+  } else {
+    // Fresh sync - fetch entries
+    const dateRange = getImportDateRange();
+    const tags = fetchTogglTags();
+    const tagLookup = {};
+    tags.forEach(t => { tagLookup[t.id] = t.name; });
+
+    const allEntries = fetchTimeEntriesAllUsers(dateRange.startDate, dateRange.endDate);
+
+    const entriesToSync = allEntries.filter(entry => {
+      const entryTags = resolveEntryTags(entry, tagLookup);
+      const hasApproved = entryTags.some(t => t.toLowerCase() === approvedTag.toLowerCase());
+      const hasSynced = entryTags.some(t => t.toLowerCase() === syncedTag.toLowerCase());
+      return hasApproved && !hasSynced;
+    });
+
+    pendingEntryIds = entriesToSync.map(e => e.id || e.time_entry_id);
+    syncedEntryIds = [];
+    totalSynced = 0;
+    totalFailed = 0;
+  }
+
+  if (pendingEntryIds.length === 0) {
+    // Nothing to sync, but may need to tag already-synced entries
+    if (syncedEntryIds.length > 0) {
+      addTagToMultipleEntries(syncedEntryIds, syncedTag);
+    }
+    return { completed: true, totalSynced, totalFailed };
+  }
+
+  // Build lookups (uses cache, minimal API calls)
+  const togglLookups = buildTogglLookups();
+  const mappings = buildMappingLookups();
+
+  // Refetch the actual entry data for pending IDs
+  // (We only saved IDs in state, not full entry data)
+  const dateRange = getImportDateRange();
+  const allEntries = fetchTimeEntriesAllUsers(dateRange.startDate, dateRange.endDate);
+  const entryMap = {};
+  allEntries.forEach(e => {
+    const id = e.id || e.time_entry_id;
+    entryMap[id] = e;
+  });
+
+  // Process entries until budget exhausted or done
+  const newPendingIds = [];
+
+  for (const entryId of pendingEntryIds) {
+    // Check budget before processing
+    if (isApproachingApiLimit(5)) {  // Reserve some calls for cleanup
+      // Save remaining entries and schedule resume
+      newPendingIds.push(entryId);
+      continue;  // Keep adding to pending
+    }
+
+    const entry = entryMap[entryId];
+    if (!entry) {
+      logMessage(`Entry ${entryId} not found in current fetch, skipping`, 'WARN');
+      continue;
+    }
+
+    try {
+      const processed = processTimeEntry(entry, togglLookups);
+      const syncResult = syncSingleEntry(processed, mappings);
+
+      if (syncResult.success) {
+        totalSynced++;
+        syncedEntryIds.push(entryId);
+        logSyncResult(processed, syncResult.qboId, 'Success', '');
+      } else {
+        totalFailed++;
+        logSyncResult(processed, '', 'Failed', syncResult.error);
+      }
+    } catch (error) {
+      totalFailed++;
+      logMessage(`Error syncing entry ${entryId}: ${error.message}`, 'ERROR');
+    }
+
+    Utilities.sleep(100);
+  }
+
+  // Add remaining pending entries to newPendingIds if we stopped due to budget
+  const processedCount = pendingEntryIds.length - newPendingIds.length;
+  for (let i = processedCount; i < pendingEntryIds.length; i++) {
+    if (!newPendingIds.includes(pendingEntryIds[i])) {
+      newPendingIds.push(pendingEntryIds[i]);
+    }
+  }
+
+  if (newPendingIds.length > 0) {
+    // Save state and schedule resume
+    const state = {
+      pendingEntryIds: newPendingIds,
+      syncedEntryIds,
+      totalSynced,
+      totalFailed,
+      pausedAt: formatDateTime(new Date())
+    };
+    saveSyncState(state);
+    scheduleResume(65);  // Resume in 65 minutes
+
+    const stats = getApiUsageStats();
+    setConfigValue('LAST_SYNC_API_CALLS', stats.workspaceCalls);
+
+    return { completed: false, totalSynced, totalFailed, pending: newPendingIds.length };
+  }
+
+  // All entries processed - add Synced tag
+  if (syncedEntryIds.length > 0) {
+    logMessage(`Adding "${syncedTag}" tag to ${syncedEntryIds.length} entries...`, 'INFO');
+    addTagToMultipleEntries(syncedEntryIds, syncedTag);
+  }
+
+  // Save API usage stats
+  const stats = getApiUsageStats();
+  setConfigValue('LAST_SYNC_API_CALLS', stats.workspaceCalls);
+  setConfigValue('LAST_SYNC_DATE', formatDateTime(new Date()));
+
+  return { completed: true, totalSynced, totalFailed };
 }

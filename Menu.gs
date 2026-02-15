@@ -33,7 +33,11 @@ function createMenu() {
         .addItem('Preview Approved Entries', 'previewApprovedEntries')
         .addItem('Sync Approved Entries', 'syncApprovedEntries')
         .addSeparator()
+        .addItem('Resume Pending Sync', 'resumePendingSync')
+        .addItem('Cancel Pending Sync', 'cancelPendingSync')
+        .addSeparator()
         .addItem('Show Sync Status', 'showSyncStatus')
+        .addItem('Show Sync State', 'showSyncState')
     )
 
     // Setup submenu
@@ -68,6 +72,7 @@ function createMenu() {
         .addItem('Configure Tag Names', 'configureTagNames')
         .addSeparator()
         .addItem('Show Current Settings', 'showCurrentSettings')
+        .addItem('Show Toggl API Usage', 'showApiUsage')
     )
 
     // Maintenance submenu

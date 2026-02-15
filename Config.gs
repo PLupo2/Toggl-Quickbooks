@@ -289,7 +289,10 @@ function createConfigSheet(ss) {
     ['APPROVED_TAG', CONFIG.TAGS.APPROVED],  // Tag name to look for in Toggl
     ['SYNCED_TAG', CONFIG.TAGS.SYNCED],      // Tag name to add after sync
     ['DEFAULT_SERVICE_ITEM_ID', ''],         // QBO Service Item ID for entries without tasks
-    ['DEFAULT_SERVICE_ITEM_NAME', '']        // QBO Service Item Name (for reference)
+    ['DEFAULT_SERVICE_ITEM_NAME', ''],       // QBO Service Item Name (for reference)
+    ['TOGGL_API_BUDGET', 180],               // Max API calls per sync (240 limit minus buffer for other tools)
+    ['LAST_SYNC_API_CALLS', ''],             // API calls used in last sync
+    ['SYNC_STATUS', '']                      // Current sync status (Paused, etc.)
   ];
 
   configSheet.getRange(2, 1, defaults.length, 2).setValues(defaults);
@@ -528,7 +531,10 @@ function syncMissingConfigKeys() {
     ['APPROVED_TAG', CONFIG.TAGS.APPROVED],
     ['SYNCED_TAG', CONFIG.TAGS.SYNCED],
     ['DEFAULT_SERVICE_ITEM_ID', ''],
-    ['DEFAULT_SERVICE_ITEM_NAME', '']
+    ['DEFAULT_SERVICE_ITEM_NAME', ''],
+    ['TOGGL_API_BUDGET', 180],              // Max Toggl API calls per sync (180 leaves buffer from 240 limit)
+    ['LAST_SYNC_API_CALLS', ''],            // API calls used in last sync (for reference)
+    ['SYNC_STATUS', '']                     // Current sync status (Paused, etc.)
   ];
 
   // Get existing keys
