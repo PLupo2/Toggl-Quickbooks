@@ -41,29 +41,56 @@ function qboRequest(endpoint, options = {}) {
 
   logMessage(`QBO Request: ${requestOptions.method.toUpperCase()} ${url}`, 'INFO');
 
-  const response = UrlFetchApp.fetch(url, requestOptions);
-  const responseCode = response.getResponseCode();
-  const responseBody = response.getContentText();
+  const MAX_RETRIES = 4;
+  let lastError = null;
 
-  if (responseCode === 401) {
-    // Token might have expired, try refreshing
-    logMessage('Got 401, attempting token refresh...', 'INFO');
-    const newToken = refreshAccessToken();
-    requestOptions.headers['Authorization'] = `Bearer ${newToken}`;
-
-    const retryResponse = UrlFetchApp.fetch(url, requestOptions);
-    if (retryResponse.getResponseCode() !== 200 && retryResponse.getResponseCode() !== 201) {
-      throw new Error(`QBO API Error after refresh: ${retryResponse.getResponseCode()} - ${retryResponse.getContentText()}`);
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      const backoffMs = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s, 16s
+      logMessage(`QBO retry ${attempt}/${MAX_RETRIES} after ${backoffMs}ms backoff...`, 'INFO');
+      Utilities.sleep(backoffMs);
     }
-    return JSON.parse(retryResponse.getContentText());
-  }
 
-  if (responseCode !== 200 && responseCode !== 201) {
+    const response = UrlFetchApp.fetch(url, requestOptions);
+    const responseCode = response.getResponseCode();
+    const responseBody = response.getContentText();
+
+    if (responseCode === 401 && attempt === 0) {
+      // Token might have expired, try refreshing (only on first attempt)
+      logMessage('Got 401, attempting token refresh...', 'INFO');
+      const newToken = refreshAccessToken();
+      requestOptions.headers['Authorization'] = `Bearer ${newToken}`;
+
+      const retryResponse = UrlFetchApp.fetch(url, requestOptions);
+      if (retryResponse.getResponseCode() !== 200 && retryResponse.getResponseCode() !== 201) {
+        throw new Error(`QBO API Error after refresh: ${retryResponse.getResponseCode()} - ${retryResponse.getContentText()}`);
+      }
+      return JSON.parse(retryResponse.getContentText());
+    }
+
+    // Success
+    if (responseCode === 200 || responseCode === 201) {
+      return JSON.parse(responseBody);
+    }
+
+    // Retryable: rate limit / bandwidth quota / server errors
+    const isRetryable = responseCode === 429
+      || responseCode === 503
+      || responseBody.includes('Bandwidth quota exceeded')
+      || responseBody.includes('throttled');
+
+    if (isRetryable && attempt < MAX_RETRIES) {
+      logMessage(`QBO retryable error (${responseCode}): ${responseBody.substring(0, 200)}`, 'WARN');
+      lastError = `QBO API Error: ${responseCode} - ${responseBody}`;
+      continue;
+    }
+
+    // Non-retryable or exhausted retries
     logMessage(`QBO API Error: ${responseCode} - ${responseBody}`, 'ERROR');
     throw new Error(`QBO API Error: ${responseCode} - ${responseBody}`);
   }
 
-  return JSON.parse(responseBody);
+  throw new Error(lastError || 'QBO request failed after retries');
 }
 
 /**
@@ -522,8 +549,8 @@ function createTimeActivitiesBatch(timeEntries) {
       });
     }
 
-    // Small delay to avoid rate limiting
-    Utilities.sleep(100);
+    // Delay between calls to avoid QBO bandwidth quota
+    Utilities.sleep(250);
   }
 
   return results;

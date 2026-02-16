@@ -1458,8 +1458,8 @@ function syncApprovedEntries() {
       }
     }
 
-    // Rate limiting between QBO calls
-    Utilities.sleep(100);
+    // Delay between QBO calls to avoid bandwidth quota
+    Utilities.sleep(250);
   }
 
   // Check if we need to pause and resume later
@@ -1965,7 +1965,8 @@ function syncApprovedEntriesWithState(existingState = null) {
       logMessage(`Error syncing entry ${entryId}: ${error.message}`, 'ERROR');
     }
 
-    Utilities.sleep(100);
+    // Delay between QBO calls to avoid bandwidth quota
+    Utilities.sleep(250);
   }
 
   // Add remaining pending entries to newPendingIds if we stopped due to budget
