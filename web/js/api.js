@@ -65,9 +65,12 @@ const API = {
    * @param {Object} [body] - Request body
    */
   async post(action, body = {}) {
+    // Use text/plain to avoid CORS preflight (OPTIONS request) which
+    // Google Apps Script web apps don't support. The GAS doPost handler
+    // parses the raw body as JSON regardless of Content-Type.
     const resp = await fetch(this.baseUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({ action, api_key: this.apiKey, ...body })
     });
     const data = await resp.json();

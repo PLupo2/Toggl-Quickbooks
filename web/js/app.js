@@ -375,15 +375,16 @@ const Pages = {
       // Fetch preview with form dates (not saved dates)
       const preview = await API.get('previewApproved', { startDate, endDate });
       Pages._syncPreview = preview;
-
-      // Save dates for next time
-      await API.post('setConfig', { key: 'START_DATE', value: startDate });
-      await API.post('setConfig', { key: 'END_DATE', value: endDate });
       Pages._syncConfig.startDate = startDate;
       Pages._syncConfig.endDate = endDate;
 
+      // Render results immediately (don't wait for save)
       Pages._renderSyncPage(Pages._syncConfig, preview);
       Toast.success(`Found ${preview.count} approved entries`);
+
+      // Save dates in background (non-blocking)
+      API.post('setConfig', { key: 'START_DATE', value: startDate }).catch(() => {});
+      API.post('setConfig', { key: 'END_DATE', value: endDate }).catch(() => {});
     } catch (err) {
       Toast.error('Preview failed: ' + err.message);
     } finally {
