@@ -1341,28 +1341,43 @@ function importCurrentUserEntries() {
  * - Uses batch tagging (1 API call per 100 entries)
  * - Can pause and auto-resume if API budget is exhausted
  *
+ * @param {Object} [options] - Optional settings
+ * @param {boolean} [options.fromWebApi] - If true, skip UI prompts (for web API calls)
  * @returns {Object} Sync results
  */
-function syncApprovedEntries() {
+function syncApprovedEntries(options = {}) {
   logMessage('Starting sync of approved entries...', 'INFO');
   logMessage(`API budget: ${getApiBudget()} calls`, 'INFO');
 
   // Check for pending sync and offer to resume
   if (hasPendingSync()) {
-    const ui = SpreadsheetApp.getUi();
-    const response = ui.alert(
-      'Pending Sync Found',
-      'There is a pending sync operation that was paused.\n\n' +
-      'Would you like to resume it?\n' +
-      '(Click No to start a fresh sync)',
-      ui.ButtonSet.YES_NO
-    );
-
-    if (response === ui.Button.YES) {
-      resumePendingSync();
-      return;
-    } else {
+    if (options.fromWebApi) {
+      // From web API: auto-clear pending state and start fresh
+      logMessage('Pending sync found, starting fresh (web API mode)', 'INFO');
       clearSyncState();
+    } else {
+      // From spreadsheet UI: prompt user
+      try {
+        const ui = SpreadsheetApp.getUi();
+        const response = ui.alert(
+          'Pending Sync Found',
+          'There is a pending sync operation that was paused.\n\n' +
+          'Would you like to resume it?\n' +
+          '(Click No to start a fresh sync)',
+          ui.ButtonSet.YES_NO
+        );
+
+        if (response === ui.Button.YES) {
+          resumePendingSync();
+          return;
+        } else {
+          clearSyncState();
+        }
+      } catch (e) {
+        // UI not available, start fresh
+        logMessage('UI not available, starting fresh sync', 'INFO');
+        clearSyncState();
+      }
     }
   }
 

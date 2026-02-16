@@ -409,21 +409,31 @@ function hoursToMinutes(hours) {
 
 /**
  * Shows a toast notification
+ * Silently fails when called from web API context (no UI available)
  * @param {string} message - Message to display
  * @param {string} [title] - Optional title
  * @param {number} [timeout] - Optional timeout in seconds
  */
 function showToast(message, title = 'Toggl-QBO Sync', timeout = 5) {
-  SpreadsheetApp.getActiveSpreadsheet().toast(message, title, timeout);
+  try {
+    SpreadsheetApp.getActiveSpreadsheet().toast(message, title, timeout);
+  } catch (e) {
+    // Silently ignore - likely running from web API context
+  }
 }
 
 /**
  * Shows an alert dialog
+ * Silently fails when called from web API context (no UI available)
  * @param {string} message - Message to display
  * @param {string} [title] - Optional title
  */
 function showAlert(message, title = 'Toggl-QBO Sync') {
-  SpreadsheetApp.getUi().alert(title, message, SpreadsheetApp.getUi().ButtonSet.OK);
+  try {
+    SpreadsheetApp.getUi().alert(title, message, SpreadsheetApp.getUi().ButtonSet.OK);
+  } catch (e) {
+    // Silently ignore - likely running from web API context
+  }
 }
 
 /**

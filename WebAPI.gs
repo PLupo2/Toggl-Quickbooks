@@ -358,7 +358,7 @@ function apiGetConfig() {
  * Triggers sync of approved entries
  */
 function apiSyncApproved() {
-  syncApprovedEntries();
+  syncApprovedEntries({ fromWebApi: true });
   return {
     message: 'Sync completed',
     lastSync: getConfigValue('LAST_SYNC_DATE', ''),
