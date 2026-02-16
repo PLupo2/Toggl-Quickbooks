@@ -37,7 +37,6 @@ function createMenu() {
         .addItem('Cancel Pending Sync', 'cancelPendingSync')
         .addSeparator()
         .addItem('Show Sync Status', 'showSyncStatus')
-        .addItem('Show Sync State', 'showSyncState')
     )
 
     // Setup submenu
@@ -51,7 +50,6 @@ function createMenu() {
         .addSeparator()
         .addItem('Show QBO Connection Status', 'showConnectionStatus')
         .addItem('Show Toggl Status', 'showTogglStatus')
-        .addItem('Check QBO Projects Availability', 'showProjectsInfo')
     )
 
     // Refresh submenu
@@ -60,8 +58,6 @@ function createMenu() {
         .addItem('Refresh Toggl Mappings', 'refreshTogglMappings')
         .addItem('Refresh QBO Master Lists', 'refreshQBOMasterLists')
         .addSeparator()
-        .addItem('Refresh All', 'refreshAll')
-        .addSeparator()
         .addItem('Wire Dropdowns', 'wireAllDropdowns')
     )
 
@@ -69,10 +65,6 @@ function createMenu() {
     .addSubMenu(
       ui.createMenu('Settings')
         .addItem('Configure Date Range', 'configureDateRange')
-        .addItem('Configure Tag Names', 'configureTagNames')
-        .addSeparator()
-        .addItem('Show Current Settings', 'showCurrentSettings')
-        .addItem('Show Toggl API Usage', 'showApiUsage')
     )
 
     // Maintenance submenu
@@ -82,17 +74,13 @@ function createMenu() {
         .addItem('View Sync Log', 'viewSyncLog')
         .addItem('Clear Sync Log', 'clearSyncLog')
         .addSeparator()
-        .addItem('Ensure Tags Exist in Toggl', 'ensureWorkflowTagsExist')
+        .addItem('Check QBO Projects Availability', 'showProjectsInfo')
         .addSeparator()
         .addItem('Hide QBO Master Sheets', 'hideQBOMasterSheets')
         .addItem('Show QBO Master Sheets', 'showQBOMasterSheets')
         .addSeparator()
-        .addItem('Apply Unmapped Row Highlighting', 'applyUnmappedRowHighlighting')
-        .addItem('Update Project Customer Mappings', 'updateProjectCustomerMappings')
+        .addItem('Apply Mapping Highlights', 'applyUnmappedRowHighlighting')
         .addItem('Sync Missing Config Keys', 'syncMissingConfigKeys')
-        .addSeparator()
-        .addItem('Debug: Customer Hierarchy', 'debugCustomerHierarchy')
-        .addItem('Debug: Test Toggl Functions', 'testTogglFunctions')
     )
 
     .addSeparator()
@@ -140,7 +128,7 @@ function buildAllSheets() {
       'Next steps:\n' +
       '1. Set your credentials in Script Properties (TOGGL_API_TOKEN, INTUIT_CLIENT_ID, etc.)\n' +
       '2. Connect to QuickBooks (Setup > Connect to QuickBooks)\n' +
-      '3. Refresh data (Refresh Data > Refresh All)\n' +
+      '3. Refresh data (Refresh Data > Refresh QBO Master Lists, then Refresh Toggl Mappings)\n' +
       '4. Configure your mappings in the Mappings_ sheets\n\n' +
       'Workflow:\n' +
       '1. In Toggl Track, add "Approved" tag to entries ready to sync\n' +
@@ -191,7 +179,7 @@ function formatAllSheets() {
 // ============================================================================
 
 /**
- * Shows current sync status and statistics
+ * Shows combined sync status: sync info, pending state, and API usage
  */
 function showSyncStatus() {
   const approvedTag = getApprovedTagName();
@@ -204,59 +192,40 @@ function showSyncStatus() {
   const syncLogSheet = ss.getSheetByName(CONFIG.SHEETS.SYNC_LOG);
   const syncLogCount = syncLogSheet ? Math.max(0, syncLogSheet.getLastRow() - 1) : 0;
 
-  showAlert(
-    `Sync Status\n\n` +
-    `Date Range: ${dateRange.startDate} to ${dateRange.endDate}\n` +
-    `Last Sync: ${lastSync}\n` +
-    `Sync Log Entries: ${syncLogCount}\n\n` +
-    `Tag Configuration:\n` +
-    `- Approved Tag: "${approvedTag}"\n` +
-    `- Synced Tag: "${syncedTag}"\n\n` +
-    `Workflow:\n` +
-    `1. In Toggl, tag entries with "${approvedTag}"\n` +
-    `2. Run "Sync Approved Entries"\n` +
-    `3. Script syncs to QBO and adds "${syncedTag}" tag`,
-    'Sync Status'
-  );
-}
+  // API usage
+  const apiStats = getApiUsageStats();
+  const lastSyncCalls = getConfigValue('LAST_SYNC_API_CALLS', '');
 
-// ============================================================================
-// REFRESH FUNCTIONS
-// ============================================================================
+  // Pending sync state
+  const state = loadSyncState();
 
-/**
- * Refreshes all data (Toggl and QBO)
- */
-function refreshAll() {
-  const ui = SpreadsheetApp.getUi();
-  const response = ui.alert(
-    'Refresh All Data',
-    'This will:\n' +
-    '1. Refresh QBO master lists (Customers, Employees, Items, Projects)\n' +
-    '2. Refresh Toggl mappings (Users, Clients, Projects, Tasks)\n' +
-    '3. Wire dropdowns\n\n' +
-    'This may take a moment. Continue?',
-    ui.ButtonSet.YES_NO
-  );
+  let message = `Sync Status\n\n`;
+  message += `Date Range: ${dateRange.startDate} to ${dateRange.endDate}\n`;
+  message += `Last Sync: ${lastSync}\n`;
+  message += `Sync Log Entries: ${syncLogCount}\n`;
+  message += `Tags: "${approvedTag}" → "${syncedTag}"\n\n`;
 
-  if (response !== ui.Button.YES) {
-    return;
+  // API section
+  message += `Toggl API Usage:\n`;
+  message += `  Workspace calls (this run): ${apiStats.workspaceCalls} / ${apiStats.budget}\n`;
+  message += `  Remaining budget: ${apiStats.remaining}\n`;
+  if (lastSyncCalls) {
+    message += `  Last sync used: ${lastSyncCalls} calls\n`;
+  }
+  message += `  (Toggl limit: 240/hr; budget adjustable via TOGGL_API_BUDGET in Config)\n\n`;
+
+  // Pending sync section
+  if (state) {
+    message += `Pending Sync:\n`;
+    message += `  Entries remaining: ${state.pendingEntryIds?.length || 0}\n`;
+    message += `  Already synced: ${state.syncedEntryIds?.length || 0}\n`;
+    message += `  Paused at: ${state.pausedAt || 'Unknown'}\n`;
+    message += `  → Run "Resume Pending Sync" to continue.\n`;
+  } else {
+    message += `No pending sync operations.`;
   }
 
-  try {
-    showToast('Refreshing QBO master lists...');
-    refreshQBOMasterLists();
-
-    showToast('Refreshing Toggl mappings...');
-    refreshTogglMappings();
-
-    showToast('Wiring dropdowns...');
-    wireAllDropdowns();
-
-    showAlert('All data refreshed successfully!', 'Refresh Complete');
-  } catch (error) {
-    showAlert(`Refresh failed: ${error.message}`, 'Refresh Error');
-  }
+  showAlert(message, 'Sync Status');
 }
 
 // ============================================================================
@@ -382,81 +351,6 @@ function saveDateRangeSettings(startDate, endDate, importDays) {
   logMessage(`Date range configured: ${dateRange.startDate} to ${dateRange.endDate}`, 'INFO');
 }
 
-/**
- * Configures the tag names used for workflow
- */
-function configureTagNames() {
-  const currentApproved = getApprovedTagName();
-  const currentSynced = getSyncedTagName();
-
-  const ui = SpreadsheetApp.getUi();
-
-  // Ask for approved tag
-  const approvedResponse = ui.prompt(
-    'Configure Tag Names - Approved Tag',
-    `This is the tag you add in Toggl to mark entries as ready for sync.\n\n` +
-    `Current: "${currentApproved}"\n\n` +
-    `Enter tag name (or leave blank to keep current):`,
-    ui.ButtonSet.OK_CANCEL
-  );
-
-  if (approvedResponse.getSelectedButton() !== ui.Button.OK) return;
-
-  const newApproved = approvedResponse.getResponseText().trim();
-  if (newApproved) {
-    setConfigValue('APPROVED_TAG', newApproved);
-  }
-
-  // Ask for synced tag
-  const syncedResponse = ui.prompt(
-    'Configure Tag Names - Synced Tag',
-    `This tag is automatically added to entries after successful sync.\n\n` +
-    `Current: "${currentSynced}"\n\n` +
-    `Enter tag name (or leave blank to keep current):`,
-    ui.ButtonSet.OK_CANCEL
-  );
-
-  if (syncedResponse.getSelectedButton() !== ui.Button.OK) return;
-
-  const newSynced = syncedResponse.getResponseText().trim();
-  if (newSynced) {
-    setConfigValue('SYNCED_TAG', newSynced);
-  }
-
-  showAlert(
-    `Tag names configured!\n\n` +
-    `Approved Tag: "${getApprovedTagName()}"\n` +
-    `Synced Tag: "${getSyncedTagName()}"`,
-    'Settings Updated'
-  );
-}
-
-/**
- * Shows current settings
- */
-function showCurrentSettings() {
-  const dateRange = getImportDateRange();
-  const approvedTag = getApprovedTagName();
-  const syncedTag = getSyncedTagName();
-  const importDays = getConfigValue('IMPORT_DAYS', CONFIG.DEFAULTS.IMPORT_DAYS);
-  const billableOnly = getConfigValue('SYNC_BILLABLE_ONLY', 'FALSE');
-  const lastSync = getConfigValue('LAST_SYNC_DATE', 'Never');
-
-  showAlert(
-    `Current Settings\n\n` +
-    `Date Range:\n` +
-    `  Start: ${getConfigValue('START_DATE', '') || `(last ${importDays} days)`}\n` +
-    `  End: ${getConfigValue('END_DATE', '') || '(today)'}\n` +
-    `  Effective: ${dateRange.startDate} to ${dateRange.endDate}\n\n` +
-    `Tags:\n` +
-    `  Approved: "${approvedTag}"\n` +
-    `  Synced: "${syncedTag}"\n\n` +
-    `Other:\n` +
-    `  Sync Billable Only: ${billableOnly}\n` +
-    `  Last Sync: ${lastSync}`,
-    'Current Settings'
-  );
-}
 
 /**
  * Validates a date string in YYYY-MM-DD format
@@ -470,31 +364,6 @@ function isValidDate(dateStr) {
 // ============================================================================
 // MAINTENANCE FUNCTIONS
 // ============================================================================
-
-/**
- * Ensures the workflow tags exist in Toggl
- */
-function ensureWorkflowTagsExist() {
-  const approvedTag = getApprovedTagName();
-  const syncedTag = getSyncedTagName();
-
-  showToast('Checking/creating workflow tags in Toggl...');
-
-  try {
-    ensureTagExists(approvedTag);
-    ensureTagExists(syncedTag);
-
-    showAlert(
-      `Workflow tags verified!\n\n` +
-      `The following tags now exist in your Toggl workspace:\n` +
-      `- "${approvedTag}" (add to entries ready to sync)\n` +
-      `- "${syncedTag}" (added automatically after sync)`,
-      'Tags Created'
-    );
-  } catch (error) {
-    showAlert(`Failed to create tags: ${error.message}`, 'Error');
-  }
-}
 
 /**
  * Views the sync log
@@ -623,7 +492,7 @@ function showHelp() {
           <strong>Step 3:</strong> Connect to QuickBooks (Setup > Connect to QuickBooks)
         </div>
         <div class="step">
-          <strong>Step 4:</strong> Refresh data (Refresh Data > Refresh All)
+          <strong>Step 4:</strong> Refresh data (Refresh Data > Refresh QBO Master Lists, then Refresh Toggl Mappings)
         </div>
         <div class="step">
           <strong>Step 5:</strong> Configure mappings in the Mappings_ sheets:
@@ -635,7 +504,7 @@ function showHelp() {
           </ul>
         </div>
         <div class="step">
-          <strong>Step 6:</strong> Create workflow tags (Maintenance > Ensure Tags Exist in Toggl)
+          <strong>Step 6:</strong> Start syncing! (Sync Operations > Preview Approved Entries)
         </div>
       </div>
 
@@ -654,7 +523,7 @@ function showHelp() {
         <h2>Settings</h2>
         <ul>
           <li><strong>Date Range:</strong> Set specific dates or use "last N days" (Settings > Configure Date Range)</li>
-          <li><strong>Tag Names:</strong> Customize the Approved/Synced tag names (Settings > Configure Tag Names)</li>
+          <li><strong>Tag Names:</strong> Edit APPROVED_TAG and SYNCED_TAG directly in the Config sheet</li>
         </ul>
       </div>
 

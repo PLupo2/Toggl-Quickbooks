@@ -80,21 +80,20 @@ const CONFIG = {
     ],
     MAPPINGS_CLIENTS: [
       'Toggl Client ID', 'Toggl Client Name', 'QBO Customer ID',
-      'QBO Customer Name', 'Auto Matched', 'Last Updated'
+      'QBO Customer Name', 'Matched', 'Last Updated'
     ],
     MAPPINGS_PROJECTS: [
       'Toggl Project ID', 'Toggl Client Name', 'Toggl Project Name',
-      'QBO Project Name', 'QBO Project ID',
-      'QBO Customer Name', 'QBO Customer ID', 'Last Updated'
+      'QBO Project Name', 'QBO Project ID', 'Matched', 'Last Updated'
     ],
     MAPPINGS_USERS: [
       'Toggl User ID', 'Toggl User Name', 'Toggl Email',
-      'QBO Employee ID', 'QBO Employee Name', 'Auto Matched', 'Last Updated'
+      'QBO Employee ID', 'QBO Employee Name', 'Matched', 'Last Updated'
     ],
     MAPPINGS_TASKS: [
       'Toggl Task ID', 'Toggl Task Name', 'Toggl Project Name',
       'Toggl Client Name', 'QBO Service Item ID', 'QBO Service Item Name',
-      'Auto Matched', 'Last Updated'
+      'Matched', 'Last Updated'
     ],
     QBO_CUSTOMERS: ['QBO Customer ID', 'QBO Customer Name'],
     QBO_EMPLOYEES: ['QBO Employee ID', 'QBO Employee Name'],

@@ -181,7 +181,7 @@ function refreshUserMappings() {
       email,
       autoMatch?.id || '',
       autoMatch?.name || '',
-      autoMatch ? 'Yes' : '',
+      !!autoMatch,      // Matched checkbox (pre-checked if auto-matched)
       timestamp
     ]);
   }
@@ -190,6 +190,10 @@ function refreshUserMappings() {
   if (newRows.length > 0) {
     const lastRow = sheet.getLastRow();
     sheet.getRange(lastRow + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
+
+    // Insert checkboxes for Matched column (col 6)
+    sheet.getRange(lastRow + 1, 6, newRows.length, 1).insertCheckboxes();
+
     logMessage(`Added ${newRows.length} new user mappings`, 'INFO');
   } else {
     logMessage('No new users to add', 'INFO');
@@ -226,7 +230,7 @@ function refreshClientMappings() {
       clientName,
       autoMatch?.id || '',
       autoMatch?.name || '',
-      autoMatch ? 'Yes' : '',
+      !!autoMatch,      // Matched checkbox (pre-checked if auto-matched)
       timestamp
     ]);
   }
@@ -234,15 +238,19 @@ function refreshClientMappings() {
   if (newRows.length > 0) {
     const lastRow = sheet.getLastRow();
     sheet.getRange(lastRow + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
+
+    // Insert checkboxes for Matched column (col 5)
+    sheet.getRange(lastRow + 1, 5, newRows.length, 1).insertCheckboxes();
+
     logMessage(`Added ${newRows.length} new client mappings`, 'INFO');
   }
 }
 
 /**
  * Smart refresh of Project mappings
- * New structure: Toggl Project ID, Toggl Client Name, Toggl Project Name,
- *                QBO Project Name, QBO Project ID, QBO Customer Name, QBO Customer ID, Last Updated
- * Customer info is auto-populated from Mappings_Clients based on Toggl Client Name
+ * Structure: Toggl Project ID, Toggl Client Name, Toggl Project Name,
+ *            QBO Project Name, QBO Project ID, Matched, Last Updated
+ * Customer info comes from Mappings_Clients during sync (not duplicated here)
  */
 function refreshProjectMappings() {
   logMessage('Refreshing Project mappings...', 'INFO');
@@ -252,22 +260,15 @@ function refreshProjectMappings() {
 
   const existing = getExistingMappings(sheet, 0);
   const timestamp = formatDateTime(new Date());
-
-  // Get client mappings to auto-populate customer info
-  const clientMappings = getClientToCustomerMappings();
-
   const newRows = [];
 
-  // projects now returns [id, name, clientName, clientId, createdAt]
+  // projects returns [id, name, clientName, clientId, createdAt]
   for (const project of projects) {
-    const [projectId, projectName, clientName, clientId] = project;
+    const [projectId, projectName, clientName] = project;
 
     if (existing.has(String(projectId))) {
       continue;
     }
-
-    // Auto-populate customer info from client mappings
-    const customerMapping = clientMappings[clientName] || { id: '', name: '' };
 
     newRows.push([
       projectId,          // Toggl Project ID
@@ -275,8 +276,7 @@ function refreshProjectMappings() {
       projectName,        // Toggl Project Name
       '',                 // QBO Project Name (sub-customer) - user selects
       '',                 // QBO Project ID (sub-customer) - auto-populated
-      customerMapping.name, // QBO Customer Name - auto from client mapping
-      customerMapping.id,   // QBO Customer ID - auto from client mapping
+      false,              // Matched checkbox
       timestamp           // Last Updated
     ]);
   }
@@ -284,83 +284,15 @@ function refreshProjectMappings() {
   if (newRows.length > 0) {
     const lastRow = sheet.getLastRow();
     sheet.getRange(lastRow + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
+
+    // Insert checkboxes for Matched column (col 6) on new rows
+    sheet.getRange(lastRow + 1, 6, newRows.length, 1).insertCheckboxes();
+
     logMessage(`Added ${newRows.length} new project mappings`, 'INFO');
   }
 
   // Sort sheet by newest first (based on original fetch order which is already sorted)
   sortMappingSheetByColumn(sheet);
-}
-
-/**
- * Gets client-to-customer mappings from Mappings_Clients sheet
- * @returns {Object} Map of clientName -> { id: qboCustomerId, name: qboCustomerName }
- */
-function getClientToCustomerMappings() {
-  const ss = getSpreadsheet();
-  const sheet = ss.getSheetByName(CONFIG.SHEETS.MAPPINGS_CLIENTS);
-  const mappings = {};
-
-  if (!sheet || sheet.getLastRow() <= 1) {
-    return mappings;
-  }
-
-  // Columns: 1=Toggl ID, 2=Toggl Name, 3=QBO ID, 4=QBO Name, 5=Auto, 6=Updated
-  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getValues();
-
-  for (const row of data) {
-    const clientName = row[1];
-    const qboId = row[2];
-    const qboName = row[3];
-
-    if (clientName && (qboId || qboName)) {
-      mappings[clientName] = { id: qboId ? String(qboId) : '', name: qboName || '' };
-    }
-  }
-
-  return mappings;
-}
-
-/**
- * Updates customer info in Mappings_Projects based on current client mappings
- * Called when client mappings change
- */
-function updateProjectCustomerMappings() {
-  logMessage('Updating customer info in project mappings...', 'INFO');
-
-  const ss = getSpreadsheet();
-  const sheet = ss.getSheetByName(CONFIG.SHEETS.MAPPINGS_PROJECTS);
-
-  if (!sheet || sheet.getLastRow() <= 1) {
-    return;
-  }
-
-  const clientMappings = getClientToCustomerMappings();
-
-  // Get all project data
-  // Columns: 1=Toggl ID, 2=Client Name, 3=Project Name, 4=QBO Proj Name, 5=QBO Proj ID, 6=QBO Cust Name, 7=QBO Cust ID, 8=Updated
-  const lastRow = sheet.getLastRow();
-  const data = sheet.getRange(2, 1, lastRow - 1, 8).getValues();
-
-  let updated = 0;
-
-  for (let i = 0; i < data.length; i++) {
-    const clientName = data[i][1]; // Toggl Client Name
-    const currentCustName = data[i][5]; // Current QBO Customer Name
-    const currentCustId = data[i][6]; // Current QBO Customer ID
-
-    const customerMapping = clientMappings[clientName] || { id: '', name: '' };
-
-    // Update if the mapping has changed
-    if (customerMapping.name !== currentCustName || customerMapping.id !== String(currentCustId)) {
-      sheet.getRange(i + 2, 6).setValue(customerMapping.name); // QBO Customer Name
-      sheet.getRange(i + 2, 7).setValue(customerMapping.id);   // QBO Customer ID
-      updated++;
-    }
-  }
-
-  if (updated > 0) {
-    logMessage(`Updated ${updated} project customer mappings`, 'INFO');
-  }
 }
 
 /**
@@ -403,7 +335,7 @@ function refreshTaskMappings() {
       clientName,
       autoMatch?.id || '',
       autoMatch?.name || '',
-      autoMatch ? 'Yes' : '',
+      !!autoMatch,      // Matched checkbox (pre-checked if auto-matched)
       timestamp
     ]);
   }
@@ -411,6 +343,10 @@ function refreshTaskMappings() {
   if (newRows.length > 0) {
     const lastRow = sheet.getLastRow();
     sheet.getRange(lastRow + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
+
+    // Insert checkboxes for Matched column (col 7)
+    sheet.getRange(lastRow + 1, 7, newRows.length, 1).insertCheckboxes();
+
     logMessage(`Added ${newRows.length} new task mappings`, 'INFO');
   }
 }
@@ -630,9 +566,8 @@ function wireClientMappingDropdowns() {
 
 /**
  * Wires dropdowns for Project mappings
- * New columns: 1=Toggl ID, 2=Toggl Client, 3=Toggl Project, 4=QBO Project Name, 5=QBO Project ID,
- *              6=QBO Customer Name (auto), 7=QBO Customer ID (auto), 8=Updated
- * Only QBO Project Name (col 4) has dropdown - customer info is auto-populated from client mappings
+ * Columns: 1=Toggl ID, 2=Toggl Client, 3=Toggl Project, 4=QBO Project Name, 5=QBO Project ID,
+ *          6=Matched, 7=Updated
  */
 function wireProjectMappingDropdowns() {
   const ss = getSpreadsheet();
@@ -645,15 +580,12 @@ function wireProjectMappingDropdowns() {
   if (projectsSheet) {
     const projectRule = createDropdownRule(projectsSheet, 2); // Column B = project names
     if (projectRule) {
-      // QBO Project Name is now column 4 in the new structure
       sheet.getRange(2, 4, DROPDOWN_MAX_ROWS, 1).setDataValidation(projectRule);
       logMessage('Project mapping dropdowns wired', 'INFO');
     }
   } else {
     logMessage('No QBO_Projects_Master sheet found - project dropdowns not wired', 'WARN');
   }
-
-  // No dropdown for customer columns - they are auto-populated from client mappings
 }
 
 /**
@@ -720,17 +652,16 @@ function buildMappingLookups() {
   }
 
   // Project mappings (Toggl Project -> QBO Sub-Customer as Project)
-  // New structure: col 1=Toggl ID, 2=Client Name, 3=Project Name, 4=QBO Proj Name, 5=QBO Proj ID, 6=QBO Cust Name, 7=QBO Cust ID
+  // Structure: col 1=Toggl ID, 2=Client Name, 3=Project Name, 4=QBO Proj Name, 5=QBO Proj ID, 6=Matched, 7=Updated
+  // Customer info comes from Mappings_Clients during sync (not stored here)
   const projectsSheet = ss.getSheetByName(CONFIG.SHEETS.MAPPINGS_PROJECTS);
   if (projectsSheet && projectsSheet.getLastRow() > 1) {
-    const data = projectsSheet.getRange(2, 1, projectsSheet.getLastRow() - 1, 7).getValues();
+    const data = projectsSheet.getRange(2, 1, projectsSheet.getLastRow() - 1, 5).getValues();
     data.forEach(row => {
       if (row[0]) { // Has Toggl Project ID
         mappings.projects[String(row[0])] = {
           qboProjectId: row[4] ? String(row[4]) : '',   // QBO Project ID (sub-customer)
-          qboProjectName: row[3] || '',                  // QBO Project Name (sub-customer)
-          qboCustomerId: row[6] ? String(row[6]) : '',  // QBO Customer ID (from client mapping)
-          qboCustomerName: row[5] || ''                  // QBO Customer Name (from client mapping)
+          qboProjectName: row[3] || ''                   // QBO Project Name (sub-customer)
         };
       }
     });
@@ -949,19 +880,12 @@ function handleClientMappingEdit(sheet, row, col, value) {
     }
   }
 
-  // If customer mapping changed, update related project mappings
-  if (customerChanged) {
-    // Delay update to let the sheet save
-    Utilities.sleep(100);
-    updateProjectCustomerMappings();
-  }
 }
 
 /**
  * Handles edits in Project mappings sheet
- * New columns: 1=Toggl ID, 2=Toggl Client, 3=Toggl Project, 4=QBO Project Name, 5=QBO Project ID,
- *              6=QBO Customer Name, 7=QBO Customer ID, 8=Updated
- * Customer columns (6,7) are auto-populated from client mappings - not editable by user
+ * Columns: 1=Toggl ID, 2=Toggl Client, 3=Toggl Project, 4=QBO Project Name, 5=QBO Project ID,
+ *          6=Matched, 7=Updated
  */
 function handleProjectMappingEdit(sheet, row, col, value) {
   const ss = getSpreadsheet();
@@ -1069,66 +993,82 @@ function showQBOMasterSheets() {
 }
 
 // ============================================================================
-// CONDITIONAL FORMATTING FOR UNMAPPED ROWS
+// CONDITIONAL FORMATTING FOR MAPPING STATUS
 // ============================================================================
 
 /**
- * Applies pastel red highlighting to rows missing QBO mappings across all mapping sheets
+ * Applies conditional formatting to all mapping sheets:
+ * - Grey: Matched checkbox is checked (row reviewed/approved)
+ * - Red: QBO mapping is empty AND Matched is unchecked (needs attention)
  */
 function applyUnmappedRowHighlighting() {
-  showToast('Applying highlighting to unmapped rows...');
+  showToast('Applying highlighting to mapping sheets...');
 
   const ss = getSpreadsheet();
-  const pastelRed = '#ffcccc'; // Light pastel red
 
-  // Apply to each mapping sheet with appropriate column check
-  // Highlight rows missing QBO mappings (BOTH ID and Name empty = unmapped)
-  applyUnmappedHighlightToSheet(ss, CONFIG.SHEETS.MAPPINGS_USERS, 4, 5);      // QBO Employee ID (col 4), Name (col 5)
-  applyUnmappedHighlightToSheet(ss, CONFIG.SHEETS.MAPPINGS_CLIENTS, 3, 4);    // QBO Customer ID (col 3), Name (col 4)
-  applyUnmappedHighlightToSheet(ss, CONFIG.SHEETS.MAPPINGS_PROJECTS, 4, 5);   // QBO Project Name (col 4), ID (col 5) - new structure
-  applyUnmappedHighlightToSheet(ss, CONFIG.SHEETS.MAPPINGS_TASKS, 5, 6);      // QBO Service Item ID (col 5), Name (col 6)
+  // Apply to each mapping sheet:
+  // Args: ss, sheetName, idCol, nameCol, matchedCol
+  applyMappingHighlights(ss, CONFIG.SHEETS.MAPPINGS_USERS, 4, 5, 6);      // QBO Employee ID/Name, Matched col 6
+  applyMappingHighlights(ss, CONFIG.SHEETS.MAPPINGS_CLIENTS, 3, 4, 5);    // QBO Customer ID/Name, Matched col 5
+  applyMappingHighlights(ss, CONFIG.SHEETS.MAPPINGS_PROJECTS, 4, 5, 6);   // QBO Project Name/ID, Matched col 6
+  applyMappingHighlights(ss, CONFIG.SHEETS.MAPPINGS_TASKS, 5, 6, 7);      // QBO Service Item ID/Name, Matched col 7
 
-  showToast('Unmapped row highlighting applied!');
+  showToast('Mapping sheet highlighting applied!');
 }
 
 /**
- * Applies conditional formatting to highlight unmapped rows in a sheet
+ * Applies two conditional formatting rules to a mapping sheet:
+ * 1. Grey highlight when Matched checkbox is checked (higher priority)
+ * 2. Red highlight when QBO mapping is empty and Matched is unchecked
  * @param {Spreadsheet} ss - Spreadsheet object
  * @param {string} sheetName - Name of the sheet
  * @param {number} idCol - Column number for QBO ID (1-based)
  * @param {number} nameCol - Column number for QBO Name (1-based)
+ * @param {number} matchedCol - Column number for Matched checkbox (1-based)
  */
-function applyUnmappedHighlightToSheet(ss, sheetName, idCol, nameCol) {
+function applyMappingHighlights(ss, sheetName, idCol, nameCol, matchedCol) {
   const sheet = ss.getSheetByName(sheetName);
   if (!sheet) return;
 
-  const pastelRed = '#ffcccc';
-  const lastRow = Math.max(sheet.getLastRow(), 2);
-  const lastCol = sheet.getLastColumn();
+  const grey = '#e0e0e0';       // Grey for matched/reviewed
+  const pastelRed = '#ffcccc';  // Red for needs attention
+  const lastCol = sheet.getLastColumn() || matchedCol;
 
-  // Clear existing conditional formatting rules for this sheet
+  // Clear existing conditional formatting rules
   sheet.clearConditionalFormatRules();
 
-  // Create range for data rows (excluding header)
+  // Range for data rows (excluding header)
   const range = sheet.getRange(2, 1, DROPDOWN_MAX_ROWS, lastCol);
 
-  // Build formula: highlight if BOTH ID and Name columns are empty
-  // Column letters for the formula
+  const matchedColLetter = columnToLetter(matchedCol);
   const idColLetter = columnToLetter(idCol);
   const nameColLetter = columnToLetter(nameCol);
 
-  // Formula checks if the row has data (col A not empty) but QBO mapping is missing
-  const formula = `=AND(A2<>"", ${idColLetter}2="", ${nameColLetter}2="")`;
+  // Rule 1 (higher priority): Grey when Matched checkbox is TRUE
+  const greyFormula = `=AND(A2<>"", ${matchedColLetter}2=TRUE)`;
+  const greyRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied(greyFormula)
+    .setBackground(grey)
+    .setRanges([range])
+    .build();
 
-  const rule = SpreadsheetApp.newConditionalFormatRule()
-    .whenFormulaSatisfied(formula)
+  // Rule 2: Red when unmapped AND not matched
+  const redFormula = `=AND(A2<>"", ${matchedColLetter}2<>TRUE, ${idColLetter}2="", ${nameColLetter}2="")`;
+  const redRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied(redFormula)
     .setBackground(pastelRed)
     .setRanges([range])
     .build();
 
-  sheet.setConditionalFormatRules([rule]);
+  // Grey rule first (higher priority), then red
+  sheet.setConditionalFormatRules([greyRule, redRule]);
 
-  logMessage(`Applied unmapped highlighting to ${sheetName}`, 'INFO');
+  // Ensure checkbox column has checkboxes for existing data rows
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2, matchedCol, sheet.getLastRow() - 1, 1).insertCheckboxes();
+  }
+
+  logMessage(`Applied mapping highlights to ${sheetName}`, 'INFO');
 }
 
 /**
