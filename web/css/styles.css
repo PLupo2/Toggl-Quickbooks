@@ -473,3 +473,249 @@ td.editable {
 td.editable:hover {
   background: var(--blue-light);
 }
+
+/* ---- Connection Status ---- */
+.connection-status {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.connection-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.connection-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.connection-dot.connected { background: var(--success); }
+.connection-dot.disconnected { background: var(--danger); }
+
+.connection-label {
+  font-weight: 500;
+}
+
+.connection-detail {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+/* ---- Date Range Inline Form ---- */
+.date-range-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.date-range-form .form-group {
+  margin-bottom: 0;
+}
+
+.date-range-form input[type="date"],
+.date-range-form input[type="number"] {
+  width: auto;
+  min-width: 140px;
+}
+
+.date-range-form input[type="number"] {
+  min-width: 80px;
+}
+
+.date-range-current {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 8px;
+}
+
+/* ---- Sync Log Groups ---- */
+.log-group {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.log-group-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  cursor: pointer;
+  background: var(--bg);
+  border-bottom: 1px solid transparent;
+  transition: background 0.15s;
+}
+
+.log-group-header:hover {
+  background: var(--blue-light);
+}
+
+.log-group.expanded .log-group-header {
+  border-bottom-color: var(--border);
+}
+
+.log-group-toggle {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  transition: transform 0.2s;
+}
+
+.log-group.expanded .log-group-toggle {
+  transform: rotate(90deg);
+}
+
+.log-group-time {
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.log-group-count {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.log-group-status {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.log-group-status .success {
+  color: var(--success);
+}
+
+.log-group-status .failed {
+  color: var(--danger);
+}
+
+.log-group-content {
+  display: none;
+  padding: 0;
+}
+
+.log-group.expanded .log-group-content {
+  display: block;
+}
+
+.log-group-content table {
+  margin: 0;
+}
+
+.log-group-content th {
+  position: static;
+}
+
+/* ---- Mapping Sections ---- */
+.mapping-section {
+  margin-bottom: 24px;
+}
+
+.mapping-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  font-size: 14px;
+  font-weight: 600;
+  border-bottom: 2px solid var(--border);
+  margin-bottom: 0;
+}
+
+.mapping-section-header.unmapped {
+  color: var(--danger);
+  border-bottom-color: var(--danger);
+}
+
+.mapping-section-header.mapped {
+  color: var(--success);
+  border-bottom-color: var(--success);
+}
+
+.mapping-section-icon {
+  font-size: 16px;
+}
+
+.mapping-section-count {
+  background: var(--bg);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mapping-section-header.unmapped .mapping-section-count {
+  background: var(--red-light);
+  color: var(--danger);
+}
+
+.mapping-section-header.mapped .mapping-section-count {
+  background: var(--green-light);
+  color: var(--success);
+}
+
+/* ---- Mapping Select Dropdown ---- */
+.mapping-select {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.mapping-select:hover {
+  border-color: var(--primary);
+}
+
+.mapping-select:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--blue-light);
+}
+
+/* ---- Empty State ---- */
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-secondary);
+}
+
+.empty-state-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+.empty-state-text {
+  font-size: 14px;
+}
+
+/* ---- Info Box ---- */
+.info-box {
+  background: var(--blue-light);
+  border: 1px solid var(--primary);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--primary-dark);
+}
+
+.info-box strong {
+  font-weight: 600;
+}

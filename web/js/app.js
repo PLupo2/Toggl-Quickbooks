@@ -173,13 +173,30 @@ const App = {
 // ===========================================================================
 
 const Pages = {
+  // ---------------------------------------------------------------------------
+  // Dashboard — Status only (no sync actions)
+  // ---------------------------------------------------------------------------
   async dashboard() {
     const content = document.getElementById('content');
     content.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div> Loading dashboard...</div>';
 
     try {
-      const data = await API.get('getDashboard');
+      // Fetch dashboard data and connection status in parallel
+      const [data, connStatus, preview] = await Promise.all([
+        API.get('getDashboard'),
+        API.get('getConnectionStatus'),
+        API.get('previewApproved')
+      ]);
 
+      // Connection status badges
+      const qboBadge = connStatus.qbo.connected
+        ? `<span class="badge badge-success">Connected</span>`
+        : `<span class="badge badge-danger">Disconnected</span>`;
+      const togglBadge = connStatus.toggl.connected
+        ? `<span class="badge badge-success">Connected</span>`
+        : `<span class="badge badge-danger">Disconnected</span>`;
+
+      // Mapping completeness cards
       const mappingCards = Object.entries(data.mappings).map(([key, m]) => {
         const pct = m.total > 0 ? Math.round((m.mapped / m.total) * 100) : 0;
         const barClass = pct === 100 ? 'progress-bar-success' : pct >= 50 ? 'progress-bar-warning' : 'progress-bar-danger';
@@ -192,42 +209,52 @@ const Pages = {
           </div>`;
       }).join('');
 
+      // Pending sync badge
       const pendingHtml = data.sync.hasPendingSync
-        ? '<span class="badge badge-warning">Pending Sync</span>'
+        ? '<span class="badge badge-warning">Paused</span>'
         : '';
 
       content.innerHTML = `
-        <div class="stats-grid">
-          <div class="stat">
-            <div class="stat-label">Last Sync</div>
-            <div class="stat-value" style="font-size:16px">${data.sync.lastSync}</div>
-            <div class="stat-detail">${data.sync.logEntries} total entries synced ${pendingHtml}</div>
+        <div class="card">
+          <div class="card-title">Connection Status</div>
+          <div class="stats-grid" style="grid-template-columns: 1fr 1fr">
+            <div class="stat">
+              <div class="stat-label">QuickBooks Online</div>
+              <div style="margin-top:4px">${qboBadge}</div>
+              <div class="stat-detail">${connStatus.qbo.realmId ? 'Realm: ' + connStatus.qbo.realmId : ''}</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">Toggl Track</div>
+              <div style="margin-top:4px">${togglBadge}</div>
+              <div class="stat-detail">${connStatus.toggl.workspaceId ? 'Workspace: ' + connStatus.toggl.workspaceId : ''}</div>
+            </div>
           </div>
-          <div class="stat">
-            <div class="stat-label">Date Range</div>
-            <div class="stat-value" style="font-size:16px">${data.sync.dateRange.start}</div>
-            <div class="stat-detail">to ${data.sync.dateRange.end}</div>
-          </div>
-          <div class="stat">
-            <div class="stat-label">Tags</div>
-            <div class="stat-value" style="font-size:16px">${data.tags.approved}</div>
-            <div class="stat-detail">Synced tag: ${data.tags.synced}</div>
-          </div>
-          <div class="stat">
-            <div class="stat-label">API Budget</div>
-            <div class="stat-value" style="font-size:16px">${data.api.budget}/hr</div>
-            <div class="stat-detail">Last sync: ${data.api.lastSyncCalls || '—'} calls</div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Sync Status</div>
+          <div class="stats-grid">
+            <div class="stat">
+              <div class="stat-label">Last Sync</div>
+              <div class="stat-value" style="font-size:16px">${formatDateTime(data.sync.lastSync)}</div>
+              <div class="stat-detail">${data.sync.logEntries.toLocaleString()} entries synced ${pendingHtml}</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">Pending</div>
+              <div class="stat-value" style="font-size:24px;color:${preview.count > 0 ? 'var(--warning)' : 'var(--success)'}">${preview.count}</div>
+              <div class="stat-detail">approved entries ready to sync</div>
+            </div>
+            <div class="stat">
+              <div class="stat-label">API Budget</div>
+              <div class="stat-value" style="font-size:16px">${data.api.budget}/hr</div>
+              <div class="stat-detail">Last sync: ${data.api.lastSyncCalls || '—'} calls</div>
+            </div>
           </div>
         </div>
 
         <div class="card">
           <div class="card-title">Mapping Completeness</div>
           <div class="stats-grid">${mappingCards}</div>
-        </div>
-
-        <div style="display:flex;gap:8px;margin-top:16px">
-          <button class="btn btn-primary" onclick="App.navigate('sync')">Sync Approved Entries</button>
-          <button class="btn" onclick="App.navigate('mappings')">View Mappings</button>
         </div>`;
     } catch (err) {
       content.innerHTML = `<div class="card"><p style="color:var(--danger)">Failed to load dashboard: ${err.message}</p>
@@ -235,46 +262,120 @@ const Pages = {
     }
   },
 
+  // ---------------------------------------------------------------------------
+  // Sync Entries — Main sync workflow with date range
+  // ---------------------------------------------------------------------------
+  _syncConfig: null,
+  _syncPreview: null,
+
   async sync() {
     const content = document.getElementById('content');
-    document.getElementById('header-actions').innerHTML = `
-      <button class="btn btn-primary" id="sync-btn" onclick="Pages.runSync()">Sync Approved Entries</button>`;
-
-    content.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div> Loading preview...</div>';
+    content.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div> Loading...</div>';
 
     try {
-      const data = await API.get('previewApproved');
-      if (data.count === 0) {
-        content.innerHTML = `
-          <div class="card" style="text-align:center;padding:40px">
-            <p style="font-size:16px;margin-bottom:8px">No approved entries to sync</p>
-            <p style="color:var(--text-secondary)">Tag entries with "${data.dateRange ? '' : 'Approved'}" in Toggl, then come back here.</p>
-          </div>`;
-        return;
-      }
+      // Fetch config and preview in parallel
+      const [config, preview] = await Promise.all([
+        API.get('getConfig'),
+        API.get('previewApproved')
+      ]);
 
-      const rows = data.entries.map(e => `
-        <tr>
-          <td>${e.date}</td>
-          <td>${e.user}</td>
-          <td>${e.description || '<em>No description</em>'}</td>
-          <td>${formatDuration(e.duration)}</td>
-          <td>${(e.tags || []).map(t => `<span class="badge badge-info">${t}</span>`).join(' ')}</td>
-        </tr>`).join('');
+      Pages._syncConfig = config;
+      Pages._syncPreview = preview;
+
+      // Calculate effective date range
+      const effectiveStart = config.startDate || `Last ${config.importDays} days`;
+      const effectiveEnd = config.endDate || 'Today';
+
+      // Build preview table
+      let previewHtml = '';
+      if (preview.count === 0) {
+        previewHtml = `
+          <div class="card" style="text-align:center;padding:32px">
+            <p style="font-size:16px;margin-bottom:8px">No approved entries to sync</p>
+            <p style="color:var(--text-secondary)">Tag entries with "<strong>${preview.approvedTag}</strong>" in Toggl, then click Refresh.</p>
+          </div>`;
+      } else {
+        const rows = preview.entries.map(e => `
+          <tr>
+            <td>${e.date}</td>
+            <td>${e.user}</td>
+            <td>${e.description || '<em>No description</em>'}</td>
+            <td>${formatDuration(e.duration)}</td>
+          </tr>`).join('');
+
+        previewHtml = `
+          <div class="card">
+            <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+              <span>${preview.count} Entries Ready to Sync</span>
+              <button class="btn btn-primary" id="sync-btn" onclick="Pages.runSync()">
+                Sync Now
+              </button>
+            </div>
+            <div class="table-wrap" style="max-height:400px;overflow-y:auto">
+              <table>
+                <thead><tr><th>Date</th><th>User</th><th>Description</th><th>Duration</th></tr></thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </div>
+          </div>`;
+      }
 
       content.innerHTML = `
         <div class="card">
-          <div class="card-title">${data.count} Entries Ready to Sync</div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Date</th><th>User</th><th>Description</th><th>Duration</th><th>Tags</th></tr></thead>
-              <tbody>${rows}</tbody>
-            </table>
+          <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+            <span>Date Range</span>
+            <div>
+              <button class="btn btn-sm" onclick="Pages.refreshPreview()">Refresh Preview</button>
+              <button class="btn btn-sm btn-primary" onclick="Pages.saveDateRange()">Save</button>
+            </div>
           </div>
-        </div>`;
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:8px">
+            <div class="form-group" style="margin-bottom:0">
+              <label>Start Date</label>
+              <input type="date" id="sync-startDate" value="${config.startDate || ''}">
+            </div>
+            <div class="form-group" style="margin-bottom:0">
+              <label>End Date</label>
+              <input type="date" id="sync-endDate" value="${config.endDate || ''}">
+            </div>
+            <div class="form-group" style="margin-bottom:0">
+              <label>Or Last N Days</label>
+              <input type="number" id="sync-importDays" value="${config.importDays}" min="1" max="365">
+            </div>
+          </div>
+          <div style="font-size:12px;color:var(--text-secondary)">
+            Currently: <strong>${effectiveStart}</strong> to <strong>${effectiveEnd}</strong>
+            &nbsp;|&nbsp; Approved tag: <strong>${preview.approvedTag}</strong>
+          </div>
+        </div>
+
+        ${previewHtml}`;
     } catch (err) {
-      content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${err.message}</p></div>`;
+      content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${err.message}</p>
+        <button class="btn" onclick="Pages.sync()">Retry</button></div>`;
     }
+  },
+
+  async saveDateRange() {
+    try {
+      const startDate = document.getElementById('sync-startDate').value;
+      const endDate = document.getElementById('sync-endDate').value;
+      const importDays = document.getElementById('sync-importDays').value;
+
+      await API.post('setConfig', { key: 'START_DATE', value: startDate });
+      await API.post('setConfig', { key: 'END_DATE', value: endDate });
+      await API.post('setConfig', { key: 'IMPORT_DAYS', value: importDays });
+
+      Toast.success('Date range saved!');
+      Pages.sync(); // Reload to show updated preview
+    } catch (err) {
+      Toast.error('Save failed: ' + err.message);
+    }
+  },
+
+  async refreshPreview() {
+    Toast.info('Refreshing preview...');
+    await Pages.sync();
   },
 
   async runSync() {
@@ -287,69 +388,116 @@ const Pages = {
     try {
       const result = await API.post('syncApproved');
       Toast.success(result.message || 'Sync completed!');
-      // Reload the preview
-      Pages.sync();
+      Pages.sync(); // Reload preview
     } catch (err) {
       Toast.error('Sync failed: ' + err.message);
       if (btn) {
         btn.disabled = false;
-        btn.textContent = 'Sync Approved Entries';
+        btn.textContent = 'Sync Now';
       }
     }
   },
+
+  // ---------------------------------------------------------------------------
+  // Sync Log — Grouped by sync job
+  // ---------------------------------------------------------------------------
+  _logExpanded: {},
 
   async log() {
     const content = document.getElementById('content');
     content.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div> Loading sync log...</div>';
 
     try {
-      const data = await API.get('getSyncLog', { limit: '100' });
+      const data = await API.get('getSyncLog', { limit: '200' });
 
       if (data.entries.length === 0) {
         content.innerHTML = '<div class="card"><p>No sync log entries yet.</p></div>';
         return;
       }
 
-      const headers = Object.keys(data.entries[0]);
-      const headerRow = headers.map(h => `<th>${h}</th>`).join('');
-      const rows = data.entries.map(entry => {
-        const cells = headers.map(h => {
-          const val = entry[h];
-          if (h.toLowerCase().includes('status')) {
-            const cls = val === 'Success' ? 'badge-success' : 'badge-danger';
-            return `<td><span class="badge ${cls}">${val}</span></td>`;
-          }
-          return `<td>${val || ''}</td>`;
+      // Group entries by sync job (truncate timestamp to minute)
+      const groups = {};
+      data.entries.forEach(entry => {
+        const syncedAt = entry['Synced At'];
+        // Truncate to minute for grouping
+        const key = typeof syncedAt === 'string' ? syncedAt.substring(0, 16) : String(syncedAt).substring(0, 16);
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(entry);
+      });
+
+      // Render grouped log
+      const groupKeys = Object.keys(groups).sort().reverse(); // Most recent first
+      const groupsHtml = groupKeys.map(key => {
+        const entries = groups[key];
+        const successCount = entries.filter(e => e['Status'] === 'Success').length;
+        const failCount = entries.length - successCount;
+        const isExpanded = Pages._logExpanded[key];
+
+        const statusBadge = failCount > 0
+          ? `<span class="badge badge-success">${successCount}</span> <span class="badge badge-danger">${failCount}</span>`
+          : `<span class="badge badge-success">${successCount}</span>`;
+
+        const entriesHtml = entries.map(e => {
+          const statusClass = e['Status'] === 'Success' ? 'badge-success' : 'badge-danger';
+          return `
+            <tr>
+              <td>${e['Toggl Entry ID'] || ''}</td>
+              <td>${e['Toggl User'] || ''}</td>
+              <td>${e['Description'] || ''}</td>
+              <td>${e['Duration'] || ''}</td>
+              <td><span class="badge ${statusClass}">${e['Status']}</span></td>
+              <td style="color:var(--danger);font-size:12px">${e['Error'] || ''}</td>
+            </tr>`;
         }).join('');
-        return `<tr>${cells}</tr>`;
+
+        return `
+          <div class="log-group ${isExpanded ? 'expanded' : ''}">
+            <div class="log-group-header" onclick="Pages.toggleLogGroup('${key}')">
+              <span class="log-group-toggle">${isExpanded ? '▼' : '▶'}</span>
+              <span class="log-group-time">${formatDateTime(key)}</span>
+              <span class="log-group-count">${entries.length} entries</span>
+              <span class="log-group-status">${statusBadge}</span>
+            </div>
+            <div class="log-group-content" style="display:${isExpanded ? 'block' : 'none'}">
+              <table>
+                <thead><tr><th>Entry ID</th><th>User</th><th>Description</th><th>Duration</th><th>Status</th><th>Error</th></tr></thead>
+                <tbody>${entriesHtml}</tbody>
+              </table>
+            </div>
+          </div>`;
       }).join('');
 
       content.innerHTML = `
         <div class="card">
-          <div class="card-title">Sync Log (${data.total} total, showing latest ${data.entries.length})</div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr>${headerRow}</tr></thead>
-              <tbody>${rows}</tbody>
-            </table>
-          </div>
+          <div class="card-title">${data.total} Total Entries in ${groupKeys.length} Sync Jobs</div>
+          ${groupsHtml}
         </div>`;
     } catch (err) {
       content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${err.message}</p></div>`;
     }
   },
 
-  // Current mapping tab
+  toggleLogGroup(key) {
+    Pages._logExpanded[key] = !Pages._logExpanded[key];
+    Pages.log();
+  },
+
+  // ---------------------------------------------------------------------------
+  // Mappings — Split into sections with dropdown selectors
+  // ---------------------------------------------------------------------------
   _mappingTab: 'Mappings_Users',
+  _qboOptions: null,
 
   async mappings() {
     const content = document.getElementById('content');
     const tabs = [
-      { key: 'Mappings_Users', label: 'Users' },
-      { key: 'Mappings_Clients', label: 'Clients' },
-      { key: 'Mappings_Projects', label: 'Projects' },
-      { key: 'Mappings_Tasks_Services', label: 'Tasks' }
+      { key: 'Mappings_Users', label: 'Users', qboType: 'employees', qboIdCol: 'QBO Employee ID', qboNameCol: 'QBO Employee Name' },
+      { key: 'Mappings_Clients', label: 'Clients', qboType: 'customers', qboIdCol: 'QBO Customer ID', qboNameCol: 'QBO Customer Name' },
+      { key: 'Mappings_Projects', label: 'Projects', qboType: 'projects', qboIdCol: 'QBO Project ID', qboNameCol: 'QBO Project Name' },
+      { key: 'Mappings_Tasks_Services', label: 'Tasks', qboType: 'serviceItems', qboIdCol: 'QBO Service Item ID', qboNameCol: 'QBO Service Item Name' }
     ];
+
+    const currentTab = tabs.find(t => t.key === Pages._mappingTab) || tabs[0];
 
     const tabHtml = tabs.map(t =>
       `<button class="tab ${t.key === Pages._mappingTab ? 'active' : ''}"
@@ -363,8 +511,14 @@ const Pages = {
       </div>`;
 
     try {
-      const data = await API.get('getMappings', { sheet: Pages._mappingTab });
-      const mapping = data.mappings[Pages._mappingTab];
+      // Fetch mapping data and QBO options
+      const [mappingData, qboOptions] = await Promise.all([
+        API.get('getMappings', { sheet: Pages._mappingTab }),
+        Pages._qboOptions ? Promise.resolve(Pages._qboOptions) : API.get('getQBOMasterOptions')
+      ]);
+
+      Pages._qboOptions = qboOptions;
+      const mapping = mappingData.mappings[Pages._mappingTab];
 
       if (!mapping || mapping.rows.length === 0) {
         document.getElementById('mapping-content').innerHTML =
@@ -372,47 +526,112 @@ const Pages = {
         return;
       }
 
-      const headers = mapping.headers.filter(h => h !== '_row');
-      const headerRow = headers.map(h => `<th>${h}</th>`).join('');
+      // Split into unmapped and mapped
+      const unmapped = [];
+      const mapped = [];
 
-      const rows = mapping.rows.map(row => {
-        const matchedCol = headers.find(h => h === 'Matched');
-        const isMatched = matchedCol && row[matchedCol] === true;
+      mapping.rows.forEach(row => {
+        const hasQboId = row[currentTab.qboIdCol];
+        const hasQboName = row[currentTab.qboNameCol];
+        const isMatched = row['Matched'] === true;
 
-        // Determine if unmapped — find QBO ID/Name columns
-        const qboIdCol = headers.find(h => h.startsWith('QBO') && h.includes('ID'));
-        const qboNameCol = headers.find(h => h.startsWith('QBO') && h.includes('Name'));
-        const isUnmapped = !isMatched
-          && (qboIdCol ? !row[qboIdCol] : true)
-          && (qboNameCol ? !row[qboNameCol] : true);
+        if (hasQboId || hasQboName || isMatched) {
+          mapped.push(row);
+        } else {
+          unmapped.push(row);
+        }
+      });
 
-        const rowClass = isMatched ? 'row-matched' : isUnmapped ? 'row-unmapped' : '';
+      // Get dropdown options for this tab
+      const options = qboOptions[currentTab.qboType] || [];
 
-        const cells = headers.map(h => {
-          const val = row[h];
-          if (h === 'Matched') {
-            return `<td><input type="checkbox" ${val ? 'checked' : ''}
-              onchange="Pages.updateMappingCell('${Pages._mappingTab}', ${row._row}, '${h}', this.checked)"></td>`;
-          }
-          return `<td>${val === null || val === undefined || val === '' ? '' : val}</td>`;
+      // Render sections
+      const renderSection = (rows, title, showDropdown) => {
+        if (rows.length === 0) return '';
+
+        const headers = mapping.headers.filter(h => h !== '_row' && h !== 'Last Updated');
+        const rowsHtml = rows.map(row => {
+          const isMatched = row['Matched'] === true;
+          const rowClass = isMatched ? 'row-matched' : '';
+
+          const cells = headers.map(h => {
+            const val = row[h];
+
+            // Matched checkbox
+            if (h === 'Matched') {
+              return `<td><input type="checkbox" ${val ? 'checked' : ''}
+                onchange="Pages.updateMappingCell('${Pages._mappingTab}', ${row._row}, '${h}', this.checked)"></td>`;
+            }
+
+            // QBO Name column — show dropdown if in unmapped section
+            if (h === currentTab.qboNameCol && showDropdown) {
+              const optionsHtml = options.map(opt =>
+                `<option value="${opt.name}" ${opt.name === val ? 'selected' : ''}>${opt.name}</option>`
+              ).join('');
+              return `<td>
+                <select class="mapping-select" onchange="Pages.selectQboMapping('${Pages._mappingTab}', ${row._row}, '${currentTab.qboIdCol}', '${currentTab.qboNameCol}', this.value)">
+                  <option value="">-- Select --</option>
+                  ${optionsHtml}
+                </select>
+              </td>`;
+            }
+
+            // Regular cell
+            return `<td>${val === null || val === undefined || val === '' ? '' : val}</td>`;
+          }).join('');
+
+          return `<tr class="${rowClass}">${cells}</tr>`;
         }).join('');
 
-        return `<tr class="${rowClass}">${cells}</tr>`;
-      }).join('');
+        const headerRow = headers.map(h => `<th>${h}</th>`).join('');
 
-      document.getElementById('mapping-content').innerHTML = `
-        <div class="card">
-          <div class="card-title">${mapping.rows.length} rows</div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr>${headerRow}</tr></thead>
-              <tbody>${rows}</tbody>
-            </table>
-          </div>
-        </div>`;
+        return `
+          <div class="mapping-section">
+            <div class="mapping-section-header">${title} (${rows.length})</div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr>${headerRow}</tr></thead>
+                <tbody>${rowsHtml}</tbody>
+              </table>
+            </div>
+          </div>`;
+      };
+
+      const unmappedHtml = renderSection(unmapped, '⚠ Needs Mapping', true);
+      const mappedHtml = renderSection(mapped, '✓ Mapped', false);
+
+      document.getElementById('mapping-content').innerHTML = unmappedHtml + mappedHtml;
     } catch (err) {
       document.getElementById('mapping-content').innerHTML =
         `<div class="card"><p style="color:var(--danger)">Error: ${err.message}</p></div>`;
+    }
+  },
+
+  async selectQboMapping(sheet, row, idCol, nameCol, selectedName) {
+    if (!selectedName) return;
+
+    // Find the ID for the selected name
+    const currentTab = Pages._mappingTab;
+    const tabs = {
+      'Mappings_Users': 'employees',
+      'Mappings_Clients': 'customers',
+      'Mappings_Projects': 'projects',
+      'Mappings_Tasks_Services': 'serviceItems'
+    };
+    const qboType = tabs[currentTab];
+    const options = Pages._qboOptions?.[qboType] || [];
+    const selected = options.find(o => o.name === selectedName);
+
+    try {
+      // Update both ID and Name columns
+      if (selected) {
+        await API.post('updateMapping', { sheet, row: String(row), col: idCol, value: selected.id });
+      }
+      await API.post('updateMapping', { sheet, row: String(row), col: nameCol, value: selectedName });
+      Toast.success('Mapping updated');
+      Pages.mappings(); // Refresh to move to mapped section
+    } catch (err) {
+      Toast.error('Update failed: ' + err.message);
     }
   },
 
@@ -420,11 +639,15 @@ const Pages = {
     try {
       await API.post('updateMapping', { sheet, row: String(row), col, value: String(value) });
       Toast.success('Updated');
+      Pages.mappings(); // Refresh
     } catch (err) {
       Toast.error('Update failed: ' + err.message);
     }
   },
 
+  // ---------------------------------------------------------------------------
+  // Refresh Data
+  // ---------------------------------------------------------------------------
   async refresh() {
     const content = document.getElementById('content');
     content.innerHTML = `
@@ -468,6 +691,10 @@ const Pages = {
     try {
       const result = await API.post(action);
       Toast.success(result.message || 'Done!');
+      // Clear cached QBO options so they get refreshed
+      if (action === 'refreshQBOMasterLists') {
+        Pages._qboOptions = null;
+      }
     } catch (err) {
       Toast.error('Error: ' + err.message);
     } finally {
@@ -476,6 +703,9 @@ const Pages = {
     }
   },
 
+  // ---------------------------------------------------------------------------
+  // Settings — Simplified (no date range, no tags)
+  // ---------------------------------------------------------------------------
   async settings() {
     const content = document.getElementById('content');
     content.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div> Loading settings...</div>';
@@ -485,59 +715,37 @@ const Pages = {
 
       content.innerHTML = `
         <div class="card">
-          <div class="card-title">Date Range</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
-            <div class="form-group">
-              <label>Start Date</label>
-              <input type="date" id="cfg-startDate" value="${config.startDate || ''}">
-            </div>
-            <div class="form-group">
-              <label>End Date</label>
-              <input type="date" id="cfg-endDate" value="${config.endDate || ''}">
-            </div>
-            <div class="form-group">
-              <label>Or Last N Days</label>
-              <input type="number" id="cfg-importDays" value="${config.importDays}" min="1" max="365">
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-title">Tags</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-            <div class="form-group">
-              <label>Approved Tag</label>
-              <input type="text" id="cfg-approvedTag" value="${config.approvedTag}">
-            </div>
-            <div class="form-group">
-              <label>Synced Tag</label>
-              <input type="text" id="cfg-syncedTag" value="${config.syncedTag}">
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
           <div class="card-title">API & Sync</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
             <div class="form-group">
               <label>Toggl API Budget (calls/hr)</label>
               <input type="number" id="cfg-apiBudget" value="${config.apiBudget}" min="1" max="240">
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">
+                Toggl limit is 240/hr. Lower values leave room for other tools.
+              </div>
             </div>
             <div class="form-group">
               <label>Sync Billable Only</label>
               <select id="cfg-billableOnly">
-                <option value="FALSE" ${config.syncBillableOnly !== 'TRUE' ? 'selected' : ''}>No</option>
-                <option value="TRUE" ${config.syncBillableOnly === 'TRUE' ? 'selected' : ''}>Yes</option>
+                <option value="FALSE" ${config.syncBillableOnly !== 'TRUE' ? 'selected' : ''}>No — sync all entries</option>
+                <option value="TRUE" ${config.syncBillableOnly === 'TRUE' ? 'selected' : ''}>Yes — only billable</option>
               </select>
             </div>
           </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        </div>
+
+        <div class="card">
+          <div class="card-title">Default Service Item</div>
+          <p style="color:var(--text-secondary);margin-bottom:16px;font-size:13px">
+            Used for time entries without a mapped Toggl task
+          </p>
+          <div style="display:grid;grid-template-columns:1fr 2fr;gap:16px">
             <div class="form-group">
-              <label>Default Service Item ID</label>
+              <label>QBO Service Item ID</label>
               <input type="text" id="cfg-defaultItemId" value="${config.defaultServiceItemId}">
             </div>
             <div class="form-group">
-              <label>Default Service Item Name</label>
+              <label>QBO Service Item Name</label>
               <input type="text" id="cfg-defaultItemName" value="${config.defaultServiceItemName}">
             </div>
           </div>
@@ -551,11 +759,6 @@ const Pages = {
 
   async saveSettings() {
     const fields = [
-      { id: 'cfg-startDate', key: 'START_DATE' },
-      { id: 'cfg-endDate', key: 'END_DATE' },
-      { id: 'cfg-importDays', key: 'IMPORT_DAYS' },
-      { id: 'cfg-approvedTag', key: 'APPROVED_TAG' },
-      { id: 'cfg-syncedTag', key: 'SYNCED_TAG' },
       { id: 'cfg-apiBudget', key: 'TOGGL_API_BUDGET' },
       { id: 'cfg-billableOnly', key: 'SYNC_BILLABLE_ONLY' },
       { id: 'cfg-defaultItemId', key: 'DEFAULT_SERVICE_ITEM_ID' },
@@ -610,6 +813,21 @@ function formatDuration(seconds) {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   return `${h}:${String(m).padStart(2, '0')}`;
+}
+
+function formatDateTime(isoString) {
+  if (!isoString || isoString === 'Never') return 'Never';
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    return d.toLocaleDateString('en-US', {
+      month: 'short', day: 'numeric', year: 'numeric'
+    }) + ' at ' + d.toLocaleTimeString('en-US', {
+      hour: 'numeric', minute: '2-digit'
+    });
+  } catch (e) {
+    return isoString;
+  }
 }
 
 // ===========================================================================

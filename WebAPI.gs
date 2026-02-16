@@ -120,6 +120,10 @@ function handleApiRequest(params, isPost = false) {
         return jsonResponse(apiGetSyncLog(parseInt(params.limit) || 50));
       case 'getConfig':
         return jsonResponse(apiGetConfig());
+      case 'getConnectionStatus':
+        return jsonResponse(apiGetConnectionStatus());
+      case 'getQBOMasterOptions':
+        return jsonResponse(apiGetQBOMasterOptions());
 
       // ---- WRITE operations (POST) ----
       case 'syncApproved':
@@ -404,6 +408,8 @@ function apiPreviewApproved() {
   return {
     count: entries.length,
     dateRange,
+    approvedTag,
+    syncedTag,
     entries
   };
 }
@@ -485,4 +491,78 @@ function apiSetConfig(key, value) {
 
   setConfigValue(key, value);
   return { message: `Config ${key} updated`, key, value };
+}
+
+// ============================================================================
+// API HANDLERS — CONNECTION & MASTER DATA
+// ============================================================================
+
+/**
+ * Returns connection status for QBO and Toggl
+ */
+function apiGetConnectionStatus() {
+  let qboConnected = false;
+  let qboRealm = null;
+  let togglConnected = false;
+  let togglWorkspace = null;
+
+  // Check QBO connection
+  try {
+    qboConnected = isConnectedToQBO();
+    if (qboConnected) {
+      qboRealm = getQBORealm() || null;
+    }
+  } catch (e) {
+    qboConnected = false;
+  }
+
+  // Check Toggl connection
+  try {
+    togglConnected = validateTogglConnection();
+    if (togglConnected) {
+      togglWorkspace = getTogglWorkspaceId() || null;
+    }
+  } catch (e) {
+    togglConnected = false;
+  }
+
+  return {
+    qbo: {
+      connected: qboConnected,
+      realmId: qboRealm
+    },
+    toggl: {
+      connected: togglConnected,
+      workspaceId: togglWorkspace
+    }
+  };
+}
+
+/**
+ * Returns QBO master list options for dropdown selectors
+ */
+function apiGetQBOMasterOptions() {
+  const ss = getSpreadsheet();
+
+  const getOptions = (sheetName, idCol, nameCol) => {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet || sheet.getLastRow() <= 1) {
+      return [];
+    }
+    const lastRow = sheet.getLastRow();
+    const data = sheet.getRange(2, 1, lastRow - 1, Math.max(idCol, nameCol)).getValues();
+    return data
+      .filter(row => row[idCol - 1] && row[nameCol - 1])
+      .map(row => ({
+        id: String(row[idCol - 1]),
+        name: String(row[nameCol - 1])
+      }));
+  };
+
+  return {
+    employees: getOptions(CONFIG.SHEETS.QBO_EMPLOYEES, 1, 2),   // ID col 1, Name col 2
+    customers: getOptions(CONFIG.SHEETS.QBO_CUSTOMERS, 1, 2),   // ID col 1, Name col 2
+    projects: getOptions(CONFIG.SHEETS.QBO_PROJECTS, 1, 2),     // ID col 1, Name col 2
+    serviceItems: getOptions(CONFIG.SHEETS.QBO_ITEMS, 1, 2)     // ID col 1, Name col 2
+  };
 }
