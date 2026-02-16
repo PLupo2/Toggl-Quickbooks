@@ -307,6 +307,8 @@ const Pages = {
         <tr>
           <td>${e.date}</td>
           <td>${e.user}</td>
+          <td>${e.project || '<em>—</em>'}</td>
+          <td>${e.task || '<em>—</em>'}</td>
           <td>${e.description || '<em>No description</em>'}</td>
           <td>${formatDuration(e.duration)}</td>
         </tr>`).join('');
@@ -314,7 +316,7 @@ const Pages = {
       previewHtml = `
         <div class="table-wrap" style="max-height:350px;overflow-y:auto">
           <table>
-            <thead><tr><th>Date</th><th>User</th><th>Description</th><th>Duration</th></tr></thead>
+            <thead><tr><th>Date</th><th>User</th><th>Project</th><th>Task</th><th>Description</th><th>Duration</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>`;

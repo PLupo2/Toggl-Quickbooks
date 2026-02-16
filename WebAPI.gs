@@ -412,11 +412,23 @@ function apiPreviewApproved(params) {
   const userMap = {};
   users.forEach(u => { userMap[u.id] = u.name || u.fullname || u.email; });
 
+  // Build project lookup
+  const projects = fetchTogglProjects();
+  const projectMap = {};
+  projects.forEach(p => { projectMap[p.id] = p.name; });
+
+  // Build task lookup
+  const tasks = fetchTogglTasks();
+  const taskMap = {};
+  tasks.forEach(t => { taskMap[t.id] = t.name; });
+
   const entries = approvedEntries.map(entry => ({
     id: entry.id,
     description: entry.description || '',
     user: userMap[entry.user_id] || entry.user_id,
-    duration: entry.duration || entry.dur || 0,
+    project: projectMap[entry.project_id] || '',
+    task: taskMap[entry.task_id] || '',
+    duration: extractDurationSeconds(entry),  // Use helper for all API formats
     date: entry.start ? entry.start.substring(0, 10) : '',
     tags: (entry.tag_ids || []).map(id => tagMap[id] || id)
   }));
