@@ -577,7 +577,11 @@ const Pages = {
       const renderSection = (rows, title, sectionClass) => {
         if (rows.length === 0) return '';
 
-        const headers = mapping.headers.filter(h => h !== '_row' && h !== 'Last Updated');
+        const headers = mapping.headers.filter(h =>
+          h !== '_row' &&
+          h !== 'Last Updated' &&
+          !h.includes('Updated')  // Also catch any variations like "Last Updated " or "LastUpdated"
+        );
         const rowsHtml = rows.map(row => {
           const isMatched = row['Matched'] === true;
           const rowClass = isMatched ? 'row-matched' : '';
