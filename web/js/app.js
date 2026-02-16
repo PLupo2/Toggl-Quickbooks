@@ -577,13 +577,15 @@ const Pages = {
       const renderSection = (rows, title, sectionClass) => {
         if (rows.length === 0) return '';
 
-        const headers = mapping.headers.filter(h =>
-          h !== '_row' &&
-          h !== 'Last Updated' &&
-          h !== 'QBO Customer ID' &&
-          h !== 'QBO Customer Name' &&  // Hide customer columns from Projects display
-          !h.includes('Updated')
-        );
+        // Filter out internal/hidden columns
+        // Only hide QBO Customer columns for Projects tab (they're not used there)
+        const isProjectsTab = Pages._mappingTab === 'Mappings_Projects';
+        const headers = mapping.headers.filter(h => {
+          if (h === '_row') return false;
+          if (h === 'Last Updated' || h.includes('Updated')) return false;
+          if (isProjectsTab && (h === 'QBO Customer ID' || h === 'QBO Customer Name')) return false;
+          return true;
+        });
         const rowsHtml = rows.map(row => {
           const isMatched = row['Matched'] === true;
           const rowClass = isMatched ? 'row-matched' : '';
