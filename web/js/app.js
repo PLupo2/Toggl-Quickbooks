@@ -515,6 +515,8 @@ const Pages = {
   // ---------------------------------------------------------------------------
   _mappingTab: 'Mappings_Users',
   _qboOptions: null,
+  _archivedExpanded: false,
+  _projectPendingCache: {},
 
   async mappings() {
     const content = document.getElementById('content');
@@ -526,6 +528,7 @@ const Pages = {
     ];
 
     const currentTab = tabs.find(t => t.key === Pages._mappingTab) || tabs[0];
+    const isProjectsTab = Pages._mappingTab === 'Mappings_Projects';
 
     const tabHtml = tabs.map(t =>
       `<button class="tab ${t.key === Pages._mappingTab ? 'active' : ''}"
@@ -554,16 +557,21 @@ const Pages = {
         return;
       }
 
-      // Split into unmapped and mapped
-      const unmapped = [];
-      const mapped = [];
+      // Split into sections based on tab type
+      let unmapped = [];
+      let mapped = [];
+      let archived = [];
 
       mapping.rows.forEach(row => {
         const hasQboId = row[currentTab.qboIdCol];
         const hasQboName = row[currentTab.qboNameCol];
         const isMatched = row['Matched'] === true;
+        const status = row['Status'] || '';
 
-        if (hasQboId || hasQboName || isMatched) {
+        // For Projects tab, separate by Status (Active vs Archived)
+        if (isProjectsTab && status === 'Archived') {
+          archived.push(row);
+        } else if (hasQboId || hasQboName || isMatched) {
           mapped.push(row);
         } else {
           unmapped.push(row);
@@ -573,23 +581,25 @@ const Pages = {
       // Get dropdown options for this tab
       const options = qboOptions[currentTab.qboType] || [];
 
-      // Render sections
-      const renderSection = (rows, title, sectionClass) => {
+      // Render section helper
+      const renderSection = (rows, title, sectionClass, isCollapsible = false, isExpanded = true) => {
         if (rows.length === 0) return '';
 
         // Filter out internal/hidden columns
-        // Only hide QBO Customer columns for Projects tab (they're not used there)
-        const isProjectsTab = Pages._mappingTab === 'Mappings_Projects';
         const headers = mapping.headers.filter(h => {
           if (h === '_row') return false;
           if (h === 'Last Updated' || h.includes('Updated')) return false;
+          if (h === 'Status') return false; // Hide Status column (shown in section header)
           if (isProjectsTab && (h === 'QBO Customer ID' || h === 'QBO Customer Name')) return false;
           return true;
         });
+
         const rowsHtml = rows.map(row => {
           const isMatched = row['Matched'] === true;
           const rowClass = isMatched ? 'row-matched' : '';
           const currentVal = row[currentTab.qboNameCol] || '';
+          const projectId = row['Toggl Project ID'];
+          const pendingWarning = Pages._projectPendingCache[projectId];
 
           const cells = headers.map(h => {
             const val = row[h];
@@ -613,6 +623,11 @@ const Pages = {
               </td>`;
             }
 
+            // Toggl Project Name with pending warning for archived projects
+            if (h === 'Toggl Project Name' && sectionClass === 'archived' && pendingWarning) {
+              return `<td>${val} <span class="badge badge-warning" title="${pendingWarning.count} pending entries">⚠ ${pendingWarning.count} pending</span></td>`;
+            }
+
             // Regular cell
             return `<td>${val === null || val === undefined || val === '' ? '' : val}</td>`;
           }).join('');
@@ -621,26 +636,67 @@ const Pages = {
         }).join('');
 
         const headerRow = headers.map(h => `<th>${h}</th>`).join('');
+        const toggleIcon = isExpanded ? '\u25BC' : '\u25B6';
+        const toggleAttr = isCollapsible ? `onclick="Pages.toggleArchivedSection()"` : '';
+        const cursorStyle = isCollapsible ? 'cursor:pointer' : '';
 
         return `
           <div class="mapping-section">
-            <div class="mapping-section-header ${sectionClass}">${title} <span class="mapping-section-count">${rows.length}</span></div>
-            <div class="table-wrap">
-              <table>
-                <thead><tr>${headerRow}</tr></thead>
-                <tbody>${rowsHtml}</tbody>
-              </table>
+            <div class="mapping-section-header ${sectionClass}" ${toggleAttr} style="${cursorStyle}">
+              ${isCollapsible ? `<span class="section-toggle">${toggleIcon}</span>` : ''}
+              ${title} <span class="mapping-section-count">${rows.length}</span>
+            </div>
+            <div class="mapping-section-content" style="display:${isExpanded ? 'block' : 'none'}">
+              <div class="table-wrap">
+                <table>
+                  <thead><tr>${headerRow}</tr></thead>
+                  <tbody>${rowsHtml}</tbody>
+                </table>
+              </div>
             </div>
           </div>`;
       };
 
       const unmappedHtml = renderSection(unmapped, '⚠ Needs Mapping', 'unmapped');
       const mappedHtml = renderSection(mapped, '✓ Mapped', 'mapped');
+      const archivedHtml = isProjectsTab
+        ? renderSection(archived, '📦 Archived/Completed', 'archived', true, Pages._archivedExpanded)
+        : '';
 
-      document.getElementById('mapping-content').innerHTML = unmappedHtml + mappedHtml;
+      document.getElementById('mapping-content').innerHTML = unmappedHtml + mappedHtml + archivedHtml;
+
+      // Check for pending entries on archived projects (background, non-blocking)
+      if (isProjectsTab && archived.length > 0 && Pages._archivedExpanded) {
+        Pages.checkArchivedProjectsPending(archived);
+      }
     } catch (err) {
       document.getElementById('mapping-content').innerHTML =
         `<div class="card"><p style="color:var(--danger)">Error: ${err.message}</p></div>`;
+    }
+  },
+
+  toggleArchivedSection() {
+    Pages._archivedExpanded = !Pages._archivedExpanded;
+    Pages.mappings();
+  },
+
+  async checkArchivedProjectsPending(archivedProjects) {
+    // Check each archived project for pending entries (in background)
+    for (const project of archivedProjects) {
+      const projectId = project['Toggl Project ID'];
+      if (!projectId || Pages._projectPendingCache[projectId]) continue;
+
+      try {
+        const result = await API.get('getProjectPendingEntries', { projectId: String(projectId) });
+        if (result.count > 0) {
+          Pages._projectPendingCache[projectId] = { count: result.count, entries: result.entries };
+          // Re-render to show warning badge
+          Pages.mappings();
+        }
+      } catch (err) {
+        // Ignore errors for background checks
+        console.log('Pending check failed for project', projectId, err.message);
+      }
     }
   },
 

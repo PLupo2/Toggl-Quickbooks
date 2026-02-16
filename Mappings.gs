@@ -157,9 +157,11 @@ function refreshTogglMappings() {
 }
 
 /**
- * Removes mapping rows for Toggl entities that no longer exist (deleted/archived).
- * Called automatically during refresh — no UI prompt needed.
- * @returns {number} Total rows removed
+ * Cleans up mapping rows for Toggl entities that no longer exist (deleted/archived).
+ * Called automatically during refresh.
+ * - Users, Clients, Tasks: Deleted from mapping sheets
+ * - Projects: Marked as "Archived" (preserves mapping history for completed projects)
+ * @returns {number} Total rows removed or archived
  */
 function cleanupDeletedMappings() {
   const currentUsers = new Set(getUsersForMapping().map(u => String(u[0])));
@@ -170,10 +172,58 @@ function cleanupDeletedMappings() {
   let totalRemoved = 0;
   totalRemoved += cleanupSheet(CONFIG.SHEETS.MAPPINGS_USERS, currentUsers, 0);
   totalRemoved += cleanupSheet(CONFIG.SHEETS.MAPPINGS_CLIENTS, currentClients, 0);
-  totalRemoved += cleanupSheet(CONFIG.SHEETS.MAPPINGS_PROJECTS, currentProjects, 0);
+  // Projects are marked as Archived instead of deleted (preserves mapping history)
+  totalRemoved += markArchivedProjects(currentProjects);
   totalRemoved += cleanupSheet(CONFIG.SHEETS.MAPPINGS_TASKS, currentTasks, 0);
 
   return totalRemoved;
+}
+
+/**
+ * Marks projects as "Archived" when they no longer exist in Toggl (archived in Toggl).
+ * Preserves mapping history for completed projects.
+ * Also reactivates projects that were archived but are now active again.
+ * @param {Set} activeProjectIds - Set of currently active Toggl project IDs
+ * @returns {number} Number of projects marked as archived
+ */
+function markArchivedProjects(activeProjectIds) {
+  const ss = getSpreadsheet();
+  const sheet = ss.getSheetByName(CONFIG.SHEETS.MAPPINGS_PROJECTS);
+
+  if (!sheet || sheet.getLastRow() <= 1) {
+    return 0;
+  }
+
+  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  const statusColIndex = 5; // 0-based: Status is column 6 (index 5)
+  let archivedCount = 0;
+
+  for (let i = 0; i < data.length; i++) {
+    const projectId = String(data[i][0]);
+    const currentStatus = data[i][statusColIndex];
+    const rowNum = i + 2;
+
+    if (!projectId) continue;
+
+    if (!activeProjectIds.has(projectId)) {
+      // Project no longer active in Toggl - mark as Archived
+      if (currentStatus !== 'Archived') {
+        sheet.getRange(rowNum, statusColIndex + 1).setValue('Archived');
+        archivedCount++;
+      }
+    } else {
+      // Project is active in Toggl - ensure status is Active (reactivate if needed)
+      if (currentStatus === 'Archived') {
+        sheet.getRange(rowNum, statusColIndex + 1).setValue('Active');
+        logMessage(`Reactivated project ${projectId}`, 'INFO');
+      } else if (!currentStatus || currentStatus === '') {
+        // Set status for legacy rows that don't have a status
+        sheet.getRange(rowNum, statusColIndex + 1).setValue('Active');
+      }
+    }
+  }
+
+  return archivedCount;
 }
 
 /**
@@ -302,6 +352,7 @@ function refreshProjectMappings() {
       projectName,        // Toggl Project Name
       '',                 // QBO Project Name - user selects
       '',                 // QBO Project ID - auto-populated
+      'Active',           // Status (Active, Archived)
       timestamp           // Last Updated
     ]);
   }
@@ -1021,6 +1072,7 @@ function showQBOMasterSheets() {
  * Applies conditional formatting to all mapping sheets:
  * - Grey: Matched checkbox is checked (row reviewed/approved)
  * - Red: QBO mapping is empty AND Matched is unchecked (needs attention)
+ * Note: Projects sheet uses Status column instead of Matched, handled separately
  */
 function applyUnmappedRowHighlighting() {
   showToast('Applying highlighting to mapping sheets...');
@@ -1031,10 +1083,53 @@ function applyUnmappedRowHighlighting() {
   // Args: ss, sheetName, idCol, nameCol, matchedCol
   applyMappingHighlights(ss, CONFIG.SHEETS.MAPPINGS_USERS, 4, 5, 6);      // QBO Employee ID/Name, Matched col 6
   applyMappingHighlights(ss, CONFIG.SHEETS.MAPPINGS_CLIENTS, 3, 4, 5);    // QBO Customer ID/Name, Matched col 5
-  applyMappingHighlights(ss, CONFIG.SHEETS.MAPPINGS_PROJECTS, 4, 5, 6);   // QBO Project Name/ID, Matched col 6
+  applyProjectMappingHighlights(ss);  // Projects use Status column, handled separately
   applyMappingHighlights(ss, CONFIG.SHEETS.MAPPINGS_TASKS, 5, 6, 7);      // QBO Service Item ID/Name, Matched col 7
 
   showToast('Mapping sheet highlighting applied!');
+}
+
+/**
+ * Applies conditional formatting to Projects mapping sheet
+ * Uses Status column instead of Matched column
+ * - Grey: Status is "Archived"
+ * - Red: QBO Project ID/Name is empty AND Status is not "Archived"
+ */
+function applyProjectMappingHighlights(ss) {
+  const sheet = ss.getSheetByName(CONFIG.SHEETS.MAPPINGS_PROJECTS);
+  if (!sheet) return;
+
+  const grey = '#e0e0e0';       // Grey for archived
+  const pastelRed = '#ffcccc';  // Red for needs attention
+  const lastCol = sheet.getLastColumn() || 7;
+
+  // Clear existing conditional formatting rules
+  sheet.clearConditionalFormatRules();
+
+  // Range for data rows (excluding header)
+  const range = sheet.getRange(2, 1, DROPDOWN_MAX_ROWS, lastCol);
+
+  // Column letters: D=QBO Project Name, E=QBO Project ID, F=Status
+  // Rule 1 (higher priority): Grey when Status is "Archived"
+  const greyFormula = '=AND(A2<>"", $F2="Archived")';
+  const greyRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied(greyFormula)
+    .setBackground(grey)
+    .setRanges([range])
+    .build();
+
+  // Rule 2: Red when unmapped (no QBO ID or Name) AND not Archived
+  const redFormula = '=AND(A2<>"", $F2<>"Archived", $D2="", $E2="")';
+  const redRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied(redFormula)
+    .setBackground(pastelRed)
+    .setRanges([range])
+    .build();
+
+  // Grey rule first (higher priority), then red
+  sheet.setConditionalFormatRules([greyRule, redRule]);
+
+  logMessage('Applied mapping highlights to Projects', 'INFO');
 }
 
 /**

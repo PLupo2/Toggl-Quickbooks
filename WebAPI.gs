@@ -124,6 +124,8 @@ function handleApiRequest(params, isPost = false) {
         return jsonResponse(apiGetConnectionStatus());
       case 'getQBOMasterOptions':
         return jsonResponse(apiGetQBOMasterOptions());
+      case 'getProjectPendingEntries':
+        return jsonResponse(apiGetProjectPendingEntries(params.projectId));
 
       // ---- WRITE operations (POST) ----
       case 'syncApproved':
@@ -606,5 +608,65 @@ function apiGetQBOMasterOptions() {
     customers: getOptions(CONFIG.SHEETS.QBO_CUSTOMERS, 1, 2),   // ID col 1, Name col 2
     projects: getOptions(CONFIG.SHEETS.QBO_PROJECTS, 1, 2),     // ID col 1, Name col 2
     serviceItems: getOptions(CONFIG.SHEETS.QBO_ITEMS, 1, 2)     // ID col 1, Name col 2
+  };
+}
+
+/**
+ * Returns pending (unsynced) time entries for a specific Toggl project.
+ * Used to warn users before archiving a project that still has unsynced time.
+ * @param {string} projectId - Toggl project ID to check
+ * @returns {Object} Pending entry count and details
+ */
+function apiGetProjectPendingEntries(projectId) {
+  if (!projectId) {
+    return { error: 'Missing projectId parameter', count: 0, entries: [] };
+  }
+
+  const dateRange = getImportDateRange();
+  const approvedTag = getApprovedTagName();
+  const syncedTag = getSyncedTagName();
+
+  // Fetch entries from Toggl
+  const allEntries = fetchTimeEntriesAllUsers(dateRange.startDate, dateRange.endDate);
+
+  // Get tag lookups
+  const tags = fetchTogglTags();
+  const tagMap = {};
+  tags.forEach(t => { tagMap[t.id] = t.name; });
+
+  const approvedTagId = Object.keys(tagMap).find(id => tagMap[id] === approvedTag);
+  const syncedTagId = Object.keys(tagMap).find(id => tagMap[id] === syncedTag);
+
+  // Filter to entries for this project that are approved but not synced
+  const pendingEntries = allEntries.filter(entry => {
+    if (String(entry.project_id) !== String(projectId)) {
+      return false;
+    }
+    const entryTagIds = entry.tag_ids || [];
+    const hasApproved = approvedTagId && entryTagIds.includes(Number(approvedTagId));
+    const hasSynced = syncedTagId && entryTagIds.includes(Number(syncedTagId));
+    return hasApproved && !hasSynced;
+  });
+
+  // Build user lookup for entry details
+  const users = fetchTogglUsers();
+  const userMap = {};
+  users.forEach(u => { userMap[u.id] = u.name || u.fullname || u.email; });
+
+  const entries = pendingEntries.map(entry => ({
+    id: entry.id,
+    description: entry.description || '',
+    user: userMap[entry.user_id] || entry.user_id,
+    duration: extractDurationSeconds(entry),
+    date: entry.start ? entry.start.substring(0, 10) : ''
+  }));
+
+  return {
+    projectId,
+    count: entries.length,
+    entries,
+    message: entries.length > 0
+      ? `This project has ${entries.length} pending entries that haven't been synced yet.`
+      : 'No pending entries for this project.'
   };
 }
