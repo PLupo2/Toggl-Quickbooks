@@ -321,6 +321,11 @@ const Pages = {
     }
 
     content.innerHTML = `
+      <div class="info-box">
+        <strong>How it works:</strong> Select a date range and click Preview to see entries tagged "${preview.approvedTag}" in Toggl.
+        Review them, then click Sync to create time entries in QuickBooks and tag them as "${preview.syncedTag}" in Toggl.
+      </div>
+
       <div class="card">
         <div class="card-title">Step 1: Select Date Range</div>
         <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:16px;align-items:end">
@@ -336,9 +341,6 @@ const Pages = {
             Preview Entries
           </button>
         </div>
-        <div style="margin-top:12px;font-size:12px;color:var(--text-secondary)">
-          Looking for entries tagged "<strong>${preview.approvedTag}</strong>" (but not "${preview.syncedTag}")
-        </div>
       </div>
 
       <div class="card">
@@ -351,11 +353,6 @@ const Pages = {
           ` : ''}
         </div>
         ${previewHtml}
-      </div>
-
-      <div class="info-box">
-        <strong>How it works:</strong> Select a date range and click Preview to see approved entries.
-        Review them, then click Sync to create time entries in QuickBooks and tag them as "${preview.syncedTag}" in Toggl.
       </div>`;
   },
 

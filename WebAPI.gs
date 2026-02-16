@@ -373,11 +373,13 @@ function apiPreviewApproved(params) {
   params = params || {};
 
   // Use provided dates if available, otherwise fall back to saved config
+  // Dates must be strings in YYYY-MM-DD format (same as getImportDateRange returns)
   let dateRange;
   if (params.startDate && params.endDate) {
+    // Keep as strings - the Toggl API expects YYYY-MM-DD format
     dateRange = {
-      startDate: new Date(params.startDate),
-      endDate: new Date(params.endDate)
+      startDate: params.startDate,
+      endDate: params.endDate
     };
   } else {
     dateRange = getImportDateRange();
