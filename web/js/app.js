@@ -475,10 +475,13 @@ const Pages = {
             </tr>`;
         }).join('');
 
+        // Triangle icons: ▼ (down, U+25BC) when expanded, ▶ (right, U+25B6) when collapsed
+        const toggleIcon = isExpanded ? '\u25BC' : '\u25B6';
+
         return `
           <div class="log-group ${isExpanded ? 'expanded' : ''}">
             <div class="log-group-header" onclick="Pages.toggleLogGroup('${key}')">
-              <span class="log-group-toggle">${isExpanded ? '▼' : '▶'}</span>
+              <span class="log-group-toggle">${toggleIcon}</span>
               <span class="log-group-time">${formatSyncTime(key)}</span>
               <span class="log-group-count">${entries.length} entries</span>
               <span class="log-group-status">${statusBadge}</span>
@@ -983,38 +986,30 @@ function formatLogDuration(durationVal) {
 
 /**
  * Format sync timestamp for group header
- * The timestamp from Google Apps Script is stored in script timezone (Eastern)
- * but may be serialized without timezone info, so we display as-is
+ * Google Sheets API returns timestamps in UTC (with Z suffix), but the grouping
+ * key truncates to 16 chars losing the Z. We need to treat these as UTC and
+ * convert to Eastern time.
  */
 function formatSyncTime(timestamp) {
   if (!timestamp) return 'Unknown time';
 
   try {
-    // Try to parse various formats
     let str = String(timestamp);
 
-    // Handle ISO format with Z (UTC) - this shouldn't happen but handle it
-    if (str.endsWith('Z') || str.includes('+') || str.includes('T')) {
-      // For UTC timestamps, convert to Eastern
-      const d = new Date(str);
-      if (!isNaN(d.getTime())) {
-        return d.toLocaleDateString('en-US', {
-          timeZone: 'America/New_York',
-          month: 'short', day: 'numeric', year: 'numeric'
-        }) + ' at ' + d.toLocaleTimeString('en-US', {
-          timeZone: 'America/New_York',
-          hour: 'numeric', minute: '2-digit'
-        });
-      }
+    // If it looks like an ISO timestamp (has T), treat as UTC
+    // The grouping key truncates "2026-02-16T18:14:05.000Z" to "2026-02-16T18:14"
+    // We need to add Z back so JavaScript parses it as UTC, not local time
+    if (str.includes('T') && !str.endsWith('Z')) {
+      str = str + ':00Z'; // Add seconds and Z for proper UTC parsing
     }
 
-    // Handle format like "2026-02-16 13:14" (no timezone = assume Eastern)
-    // Parse as local time and display as-is
-    const d = new Date(str.replace(' ', 'T'));
+    const d = new Date(str);
     if (!isNaN(d.getTime())) {
       return d.toLocaleDateString('en-US', {
+        timeZone: 'America/New_York',
         month: 'short', day: 'numeric', year: 'numeric'
       }) + ' at ' + d.toLocaleTimeString('en-US', {
+        timeZone: 'America/New_York',
         hour: 'numeric', minute: '2-digit'
       });
     }
