@@ -458,11 +458,13 @@ const Pages = {
 
         const entriesHtml = entries.map(e => {
           const statusClass = e['Status'] === 'Success' ? 'badge-success' : 'badge-danger';
-          // Duration may be stored as seconds or as formatted string - handle both
-          const duration = typeof e['Duration'] === 'number' ? formatDuration(e['Duration']) : (e['Duration'] || '');
+          // Format date - handle ISO strings and show just the date portion
+          const entryDate = formatLogDate(e['Date']);
+          // Duration - handle spreadsheet date serialization (1899-12-30 epoch) or formatted strings
+          const duration = formatLogDuration(e['Duration']);
           return `
             <tr>
-              <td>${e['Date'] || ''}</td>
+              <td>${entryDate}</td>
               <td>${e['Toggl User'] || ''}</td>
               <td>${e['Toggl Project'] || '<em>—</em>'}</td>
               <td>${e['Toggl Task'] || '<em>—</em>'}</td>
@@ -477,7 +479,7 @@ const Pages = {
           <div class="log-group ${isExpanded ? 'expanded' : ''}">
             <div class="log-group-header" onclick="Pages.toggleLogGroup('${key}')">
               <span class="log-group-toggle">${isExpanded ? '▼' : '▶'}</span>
-              <span class="log-group-time">${formatDateTimeET(key)}</span>
+              <span class="log-group-time">${formatSyncTime(key)}</span>
               <span class="log-group-count">${entries.length} entries</span>
               <span class="log-group-status">${statusBadge}</span>
             </div>
@@ -921,6 +923,105 @@ function formatDateTimeET(isoString) {
     });
   } catch (e) {
     return isoString;
+  }
+}
+
+/**
+ * Format sync log date - just show readable date without time
+ * Handles ISO strings like "2026-02-13T05:00:00.000Z"
+ */
+function formatLogDate(dateStr) {
+  if (!dateStr) return '';
+  try {
+    // If it's an ISO string, extract just the date part
+    if (typeof dateStr === 'string' && dateStr.includes('T')) {
+      const datePart = dateStr.split('T')[0]; // "2026-02-13"
+      return datePart;
+    }
+    // If it's already a simple date string, return as-is
+    return String(dateStr);
+  } catch (e) {
+    return String(dateStr);
+  }
+}
+
+/**
+ * Format duration from sync log
+ * Handles Google Sheets date serialization (1899-12-30 epoch issue)
+ * where duration "0:44" becomes "1899-12-30T00:44:00.000Z"
+ */
+function formatLogDuration(durationVal) {
+  if (!durationVal) return '0:00';
+
+  const str = String(durationVal);
+
+  // Handle spreadsheet date serialization (1899-12-30 is the epoch)
+  if (str.includes('1899-12-30') || str.includes('1899-12-31')) {
+    try {
+      // Extract time portion from ISO string like "1899-12-30T05:44:00.000Z"
+      const match = str.match(/T(\d{2}):(\d{2})/);
+      if (match) {
+        const hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        return `${hours}:${String(minutes).padStart(2, '0')}`;
+      }
+    } catch (e) {}
+  }
+
+  // Handle if it's already formatted like "1:30" or "0:45"
+  if (/^\d+:\d{2}$/.test(str)) {
+    return str;
+  }
+
+  // Handle if it's a number (seconds)
+  if (typeof durationVal === 'number') {
+    return formatDuration(durationVal);
+  }
+
+  return str;
+}
+
+/**
+ * Format sync timestamp for group header
+ * The timestamp from Google Apps Script is stored in script timezone (Eastern)
+ * but may be serialized without timezone info, so we display as-is
+ */
+function formatSyncTime(timestamp) {
+  if (!timestamp) return 'Unknown time';
+
+  try {
+    // Try to parse various formats
+    let str = String(timestamp);
+
+    // Handle ISO format with Z (UTC) - this shouldn't happen but handle it
+    if (str.endsWith('Z') || str.includes('+') || str.includes('T')) {
+      // For UTC timestamps, convert to Eastern
+      const d = new Date(str);
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleDateString('en-US', {
+          timeZone: 'America/New_York',
+          month: 'short', day: 'numeric', year: 'numeric'
+        }) + ' at ' + d.toLocaleTimeString('en-US', {
+          timeZone: 'America/New_York',
+          hour: 'numeric', minute: '2-digit'
+        });
+      }
+    }
+
+    // Handle format like "2026-02-16 13:14" (no timezone = assume Eastern)
+    // Parse as local time and display as-is
+    const d = new Date(str.replace(' ', 'T'));
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric', year: 'numeric'
+      }) + ' at ' + d.toLocaleTimeString('en-US', {
+        hour: 'numeric', minute: '2-digit'
+      });
+    }
+
+    return str;
+  } catch (e) {
+    return String(timestamp);
   }
 }
 
