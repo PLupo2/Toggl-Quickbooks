@@ -359,23 +359,8 @@ function showConnectionStatus() {
 // WEB APP CALLBACK HANDLER
 // ============================================================================
 
-/**
- * Handles the OAuth callback as a Web App
- * This function is called when Intuit redirects back after authorization
- * @param {Object} e - Event object containing query parameters
- * @returns {HtmlOutput} HTML response
- */
-function doGet(e) {
-  const params = e.parameter;
-
-  if (params.code) {
-    return handleOAuthCallback(params);
-  }
-
-  return HtmlService.createHtmlOutput(
-    '<html><body><h2>Toggl-QBO Sync</h2><p>OAuth callback endpoint ready.</p></body></html>'
-  );
-}
+// NOTE: doGet is defined in WebAPI.gs — it handles both OAuth callbacks and API requests.
+// The handleOAuthCallback function below is called from there when params.code is present.
 
 /**
  * Handles the OAuth callback with authorization code
