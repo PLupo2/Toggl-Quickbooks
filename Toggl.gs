@@ -1496,7 +1496,9 @@ function syncApprovedEntries(options = {}) {
       `${pendingEntryIds.length} pending.\n\nWill auto-resume in ~65 minutes when rate limit resets.\n` +
       `API calls used: ${stats.workspaceCalls}`;
     logMessage(message, 'INFO');
-    showAlert(message, 'Sync Paused');
+    if (!options.fromWebApi) {
+      showAlert(message, 'Sync Paused');
+    }
 
     return results;
   }
@@ -1516,7 +1518,9 @@ function syncApprovedEntries(options = {}) {
   const message = `Sync complete: ${results.synced} synced, ${results.failed} failed\n` +
     `API calls used: ${stats.workspaceCalls} / ${stats.budget}`;
   logMessage(message, 'INFO');
-  showAlert(message, 'Sync Complete');
+  if (!options.fromWebApi) {
+    showAlert(message, 'Sync Complete');
+  }
 
   return results;
 }

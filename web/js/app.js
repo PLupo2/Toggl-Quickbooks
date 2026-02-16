@@ -458,12 +458,16 @@ const Pages = {
 
         const entriesHtml = entries.map(e => {
           const statusClass = e['Status'] === 'Success' ? 'badge-success' : 'badge-danger';
+          // Duration may be stored as seconds or as formatted string - handle both
+          const duration = typeof e['Duration'] === 'number' ? formatDuration(e['Duration']) : (e['Duration'] || '');
           return `
             <tr>
-              <td>${e['Toggl Entry ID'] || ''}</td>
+              <td>${e['Date'] || ''}</td>
               <td>${e['Toggl User'] || ''}</td>
+              <td>${e['Toggl Project'] || '<em>—</em>'}</td>
+              <td>${e['Toggl Task'] || '<em>—</em>'}</td>
               <td>${e['Description'] || ''}</td>
-              <td>${e['Duration'] || ''}</td>
+              <td>${duration}</td>
               <td><span class="badge ${statusClass}">${e['Status']}</span></td>
               <td style="color:var(--danger);font-size:12px">${e['Error'] || ''}</td>
             </tr>`;
@@ -473,13 +477,13 @@ const Pages = {
           <div class="log-group ${isExpanded ? 'expanded' : ''}">
             <div class="log-group-header" onclick="Pages.toggleLogGroup('${key}')">
               <span class="log-group-toggle">${isExpanded ? '▼' : '▶'}</span>
-              <span class="log-group-time">${formatDateTime(key)}</span>
+              <span class="log-group-time">${formatDateTimeET(key)}</span>
               <span class="log-group-count">${entries.length} entries</span>
               <span class="log-group-status">${statusBadge}</span>
             </div>
             <div class="log-group-content" style="display:${isExpanded ? 'block' : 'none'}">
               <table>
-                <thead><tr><th>Entry ID</th><th>User</th><th>Description</th><th>Duration</th><th>Status</th><th>Error</th></tr></thead>
+                <thead><tr><th>Date</th><th>User</th><th>Project</th><th>Task</th><th>Description</th><th>Duration</th><th>Status</th><th>Error</th></tr></thead>
                 <tbody>${entriesHtml}</tbody>
               </table>
             </div>
@@ -896,6 +900,23 @@ function formatDateTime(isoString) {
     return d.toLocaleDateString('en-US', {
       month: 'short', day: 'numeric', year: 'numeric'
     }) + ' at ' + d.toLocaleTimeString('en-US', {
+      hour: 'numeric', minute: '2-digit'
+    });
+  } catch (e) {
+    return isoString;
+  }
+}
+
+function formatDateTimeET(isoString) {
+  if (!isoString || isoString === 'Never') return 'Never';
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return isoString;
+    return d.toLocaleDateString('en-US', {
+      timeZone: 'America/New_York',
+      month: 'short', day: 'numeric', year: 'numeric'
+    }) + ' at ' + d.toLocaleTimeString('en-US', {
+      timeZone: 'America/New_York',
       hour: 'numeric', minute: '2-digit'
     });
   } catch (e) {

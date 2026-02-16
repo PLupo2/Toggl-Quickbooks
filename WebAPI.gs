@@ -358,9 +358,19 @@ function apiGetConfig() {
  * Triggers sync of approved entries
  */
 function apiSyncApproved() {
-  syncApprovedEntries({ fromWebApi: true });
+  let results;
+  try {
+    results = syncApprovedEntries({ fromWebApi: true });
+  } catch (e) {
+    // Catch any stray UI errors (SpreadsheetApp.getUi) that might occur
+    // during sync notifications - the sync itself may have succeeded
+    logMessage(`Sync completed with notification error: ${e.message}`, 'WARN');
+  }
+
   return {
     message: 'Sync completed',
+    synced: results?.synced || 0,
+    failed: results?.failed || 0,
     lastSync: getConfigValue('LAST_SYNC_DATE', ''),
     apiCalls: getConfigValue('LAST_SYNC_API_CALLS', '')
   };
