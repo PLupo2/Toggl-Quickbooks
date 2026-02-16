@@ -300,10 +300,8 @@ function refreshProjectMappings() {
       projectId,          // Toggl Project ID
       clientName,         // Toggl Client Name
       projectName,        // Toggl Project Name
-      '',                 // QBO Project Name (sub-customer) - user selects
-      '',                 // QBO Project ID (sub-customer) - auto-populated
-      '',                 // QBO Customer Name (parent customer) - user selects
-      '',                 // QBO Customer ID - auto-populated when customer selected
+      '',                 // QBO Project Name - user selects
+      '',                 // QBO Project ID - auto-populated
       false,              // Matched checkbox
       timestamp           // Last Updated
     ]);
@@ -313,8 +311,8 @@ function refreshProjectMappings() {
     const lastRow = sheet.getLastRow();
     sheet.getRange(lastRow + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
 
-    // Insert checkboxes for Matched column (col 8) on new rows
-    sheet.getRange(lastRow + 1, 8, newRows.length, 1).insertCheckboxes();
+    // Insert checkboxes for Matched column (col 6) on new rows
+    sheet.getRange(lastRow + 1, 6, newRows.length, 1).insertCheckboxes();
 
     logMessage(`Added ${newRows.length} new project mappings`, 'INFO');
   }

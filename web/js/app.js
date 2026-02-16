@@ -580,8 +580,9 @@ const Pages = {
         const headers = mapping.headers.filter(h =>
           h !== '_row' &&
           h !== 'Last Updated' &&
-          h !== 'QBO Customer ID' &&  // Hide from display (internal tracking)
-          !h.includes('Updated')  // Also catch any variations like "Last Updated " or "LastUpdated"
+          h !== 'QBO Customer ID' &&
+          h !== 'QBO Customer Name' &&  // Hide customer columns from Projects display
+          !h.includes('Updated')
         );
         const rowsHtml = rows.map(row => {
           const isMatched = row['Matched'] === true;
@@ -595,21 +596,6 @@ const Pages = {
             if (h === 'Matched') {
               return `<td><input type="checkbox" ${val ? 'checked' : ''}
                 onchange="Pages.updateMappingCell('${Pages._mappingTab}', ${row._row}, '${h}', this.checked)"></td>`;
-            }
-
-            // QBO Customer Name column (Projects tab) — dropdown for parent customer
-            if (h === 'QBO Customer Name' && Pages._mappingTab === 'Mappings_Projects') {
-              const customerOptions = qboOptions['customers'] || [];
-              const currentCustomer = val || '';
-              const customerOptionsHtml = customerOptions.map(opt =>
-                `<option value="${opt.name}" ${opt.name === currentCustomer ? 'selected' : ''}>${opt.name}</option>`
-              ).join('');
-              return `<td>
-                <select class="mapping-select" onchange="Pages.selectQboCustomer('${Pages._mappingTab}', ${row._row}, this.value)">
-                  <option value="">-- Select --</option>
-                  ${customerOptionsHtml}
-                </select>
-              </td>`;
             }
 
             // QBO Name column — always show dropdown for editing
@@ -679,26 +665,6 @@ const Pages = {
       await API.post('updateMapping', { sheet, row: String(row), col: nameCol, value: selectedName });
       Toast.success('Mapping updated');
       Pages.mappings(); // Refresh to move to mapped section
-    } catch (err) {
-      Toast.error('Update failed: ' + err.message);
-    }
-  },
-
-  async selectQboCustomer(sheet, row, selectedName) {
-    // Handle QBO Customer selection for Projects tab (parent customer for billing)
-    const customerOptions = Pages._qboOptions?.['customers'] || [];
-    const selected = customerOptions.find(o => o.name === selectedName);
-
-    try {
-      // Update both QBO Customer Name and QBO Customer ID columns
-      await API.post('updateMapping', { sheet, row: String(row), col: 'QBO Customer Name', value: selectedName || '' });
-      if (selected) {
-        await API.post('updateMapping', { sheet, row: String(row), col: 'QBO Customer ID', value: selected.id });
-      } else {
-        await API.post('updateMapping', { sheet, row: String(row), col: 'QBO Customer ID', value: '' });
-      }
-      Toast.success('Customer mapping updated');
-      Pages.mappings(); // Refresh
     } catch (err) {
       Toast.error('Update failed: ' + err.message);
     }
