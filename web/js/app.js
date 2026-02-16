@@ -273,109 +273,128 @@ const Pages = {
     content.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div> Loading...</div>';
 
     try {
-      // Fetch config and preview in parallel
-      const [config, preview] = await Promise.all([
-        API.get('getConfig'),
-        API.get('previewApproved')
-      ]);
-
+      // Fetch config first
+      const config = await API.get('getConfig');
       Pages._syncConfig = config;
+
+      // Initial preview with saved dates
+      const preview = await API.get('previewApproved');
       Pages._syncPreview = preview;
 
-      // Calculate effective date range
-      const effectiveStart = config.startDate || `Last ${config.importDays} days`;
-      const effectiveEnd = config.endDate || 'Today';
-
-      // Build preview table
-      let previewHtml = '';
-      if (preview.count === 0) {
-        previewHtml = `
-          <div class="card" style="text-align:center;padding:32px">
-            <p style="font-size:16px;margin-bottom:8px">No approved entries to sync</p>
-            <p style="color:var(--text-secondary)">Tag entries with "<strong>${preview.approvedTag}</strong>" in Toggl, then click Refresh.</p>
-          </div>`;
-      } else {
-        const rows = preview.entries.map(e => `
-          <tr>
-            <td>${e.date}</td>
-            <td>${e.user}</td>
-            <td>${e.description || '<em>No description</em>'}</td>
-            <td>${formatDuration(e.duration)}</td>
-          </tr>`).join('');
-
-        previewHtml = `
-          <div class="card">
-            <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-              <span>${preview.count} Entries Ready to Sync</span>
-              <button class="btn btn-primary" id="sync-btn" onclick="Pages.runSync()">
-                Sync Now
-              </button>
-            </div>
-            <div class="table-wrap" style="max-height:400px;overflow-y:auto">
-              <table>
-                <thead><tr><th>Date</th><th>User</th><th>Description</th><th>Duration</th></tr></thead>
-                <tbody>${rows}</tbody>
-              </table>
-            </div>
-          </div>`;
-      }
-
-      content.innerHTML = `
-        <div class="card">
-          <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-            <span>Date Range</span>
-            <div>
-              <button class="btn btn-sm" onclick="Pages.refreshPreview()">Refresh Preview</button>
-              <button class="btn btn-sm btn-primary" onclick="Pages.saveDateRange()">Save</button>
-            </div>
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:8px">
-            <div class="form-group" style="margin-bottom:0">
-              <label>Start Date</label>
-              <input type="date" id="sync-startDate" value="${config.startDate || ''}">
-            </div>
-            <div class="form-group" style="margin-bottom:0">
-              <label>End Date</label>
-              <input type="date" id="sync-endDate" value="${config.endDate || ''}">
-            </div>
-            <div class="form-group" style="margin-bottom:0">
-              <label>Or Last N Days</label>
-              <input type="number" id="sync-importDays" value="${config.importDays}" min="1" max="365">
-            </div>
-          </div>
-          <div style="font-size:12px;color:var(--text-secondary)">
-            Currently: <strong>${effectiveStart}</strong> to <strong>${effectiveEnd}</strong>
-            &nbsp;|&nbsp; Approved tag: <strong>${preview.approvedTag}</strong>
-          </div>
-        </div>
-
-        ${previewHtml}`;
+      Pages._renderSyncPage(config, preview);
     } catch (err) {
       content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${err.message}</p>
         <button class="btn" onclick="Pages.sync()">Retry</button></div>`;
     }
   },
 
-  async saveDateRange() {
-    try {
-      const startDate = document.getElementById('sync-startDate').value;
-      const endDate = document.getElementById('sync-endDate').value;
-      const importDays = document.getElementById('sync-importDays').value;
+  _renderSyncPage(config, preview) {
+    const content = document.getElementById('content');
 
-      await API.post('setConfig', { key: 'START_DATE', value: startDate });
-      await API.post('setConfig', { key: 'END_DATE', value: endDate });
-      await API.post('setConfig', { key: 'IMPORT_DAYS', value: importDays });
+    // Build preview table
+    let previewHtml = '';
+    if (preview.count === 0) {
+      previewHtml = `
+        <div class="empty-state">
+          <div class="empty-state-icon">📋</div>
+          <p class="empty-state-text">No approved entries found in this date range</p>
+          <p style="color:var(--text-secondary);font-size:13px;margin-top:8px">
+            Tag entries with "<strong>${preview.approvedTag}</strong>" in Toggl, then click Preview.
+          </p>
+        </div>`;
+    } else {
+      const rows = preview.entries.map(e => `
+        <tr>
+          <td>${e.date}</td>
+          <td>${e.user}</td>
+          <td>${e.description || '<em>No description</em>'}</td>
+          <td>${formatDuration(e.duration)}</td>
+        </tr>`).join('');
 
-      Toast.success('Date range saved!');
-      Pages.sync(); // Reload to show updated preview
-    } catch (err) {
-      Toast.error('Save failed: ' + err.message);
+      previewHtml = `
+        <div class="table-wrap" style="max-height:350px;overflow-y:auto">
+          <table>
+            <thead><tr><th>Date</th><th>User</th><th>Description</th><th>Duration</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`;
     }
+
+    content.innerHTML = `
+      <div class="card">
+        <div class="card-title">Step 1: Select Date Range</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:16px;align-items:end">
+          <div class="form-group" style="margin-bottom:0">
+            <label>Start Date</label>
+            <input type="date" id="sync-startDate" value="${config.startDate || ''}">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label>End Date</label>
+            <input type="date" id="sync-endDate" value="${config.endDate || ''}">
+          </div>
+          <button class="btn btn-primary" id="preview-btn" onclick="Pages.refreshPreview()">
+            Preview Entries
+          </button>
+        </div>
+        <div style="margin-top:12px;font-size:12px;color:var(--text-secondary)">
+          Looking for entries tagged "<strong>${preview.approvedTag}</strong>" (but not "${preview.syncedTag}")
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Step 2: Review & Sync ${preview.count > 0 ? `(${preview.count} entries)` : ''}</span>
+          ${preview.count > 0 ? `
+            <button class="btn btn-success" id="sync-btn" onclick="Pages.runSync()">
+              Sync ${preview.count} Entries to QuickBooks
+            </button>
+          ` : ''}
+        </div>
+        ${previewHtml}
+      </div>
+
+      <div class="info-box">
+        <strong>How it works:</strong> Select a date range and click Preview to see approved entries.
+        Review them, then click Sync to create time entries in QuickBooks and tag them as "${preview.syncedTag}" in Toggl.
+      </div>`;
   },
 
   async refreshPreview() {
-    Toast.info('Refreshing preview...');
-    await Pages.sync();
+    const btn = document.getElementById('preview-btn');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<div class="spinner"></div> Loading...';
+    }
+
+    try {
+      const startDate = document.getElementById('sync-startDate').value;
+      const endDate = document.getElementById('sync-endDate').value;
+
+      if (!startDate || !endDate) {
+        Toast.error('Please select both start and end dates');
+        return;
+      }
+
+      // Fetch preview with form dates (not saved dates)
+      const preview = await API.get('previewApproved', { startDate, endDate });
+      Pages._syncPreview = preview;
+
+      // Save dates for next time
+      await API.post('setConfig', { key: 'START_DATE', value: startDate });
+      await API.post('setConfig', { key: 'END_DATE', value: endDate });
+      Pages._syncConfig.startDate = startDate;
+      Pages._syncConfig.endDate = endDate;
+
+      Pages._renderSyncPage(Pages._syncConfig, preview);
+      Toast.success(`Found ${preview.count} approved entries`);
+    } catch (err) {
+      Toast.error('Preview failed: ' + err.message);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Preview Entries';
+      }
+    }
   },
 
   async runSync() {
@@ -546,13 +565,14 @@ const Pages = {
       const options = qboOptions[currentTab.qboType] || [];
 
       // Render sections
-      const renderSection = (rows, title, showDropdown) => {
+      const renderSection = (rows, title, sectionClass) => {
         if (rows.length === 0) return '';
 
         const headers = mapping.headers.filter(h => h !== '_row' && h !== 'Last Updated');
         const rowsHtml = rows.map(row => {
           const isMatched = row['Matched'] === true;
           const rowClass = isMatched ? 'row-matched' : '';
+          const currentVal = row[currentTab.qboNameCol] || '';
 
           const cells = headers.map(h => {
             const val = row[h];
@@ -563,10 +583,10 @@ const Pages = {
                 onchange="Pages.updateMappingCell('${Pages._mappingTab}', ${row._row}, '${h}', this.checked)"></td>`;
             }
 
-            // QBO Name column — show dropdown if in unmapped section
-            if (h === currentTab.qboNameCol && showDropdown) {
+            // QBO Name column — always show dropdown for editing
+            if (h === currentTab.qboNameCol) {
               const optionsHtml = options.map(opt =>
-                `<option value="${opt.name}" ${opt.name === val ? 'selected' : ''}>${opt.name}</option>`
+                `<option value="${opt.name}" ${opt.name === currentVal ? 'selected' : ''}>${opt.name}</option>`
               ).join('');
               return `<td>
                 <select class="mapping-select" onchange="Pages.selectQboMapping('${Pages._mappingTab}', ${row._row}, '${currentTab.qboIdCol}', '${currentTab.qboNameCol}', this.value)">
@@ -587,7 +607,7 @@ const Pages = {
 
         return `
           <div class="mapping-section">
-            <div class="mapping-section-header">${title} (${rows.length})</div>
+            <div class="mapping-section-header ${sectionClass}">${title} <span class="mapping-section-count">${rows.length}</span></div>
             <div class="table-wrap">
               <table>
                 <thead><tr>${headerRow}</tr></thead>
@@ -597,8 +617,8 @@ const Pages = {
           </div>`;
       };
 
-      const unmappedHtml = renderSection(unmapped, '⚠ Needs Mapping', true);
-      const mappedHtml = renderSection(mapped, '✓ Mapped', false);
+      const unmappedHtml = renderSection(unmapped, '⚠ Needs Mapping', 'unmapped');
+      const mappedHtml = renderSection(mapped, '✓ Mapped', 'mapped');
 
       document.getElementById('mapping-content').innerHTML = unmappedHtml + mappedHtml;
     } catch (err) {
@@ -704,7 +724,7 @@ const Pages = {
   },
 
   // ---------------------------------------------------------------------------
-  // Settings — Simplified (no date range, no tags)
+  // Settings — Full configuration options
   // ---------------------------------------------------------------------------
   async settings() {
     const content = document.getElementById('content');
@@ -715,21 +735,47 @@ const Pages = {
 
       content.innerHTML = `
         <div class="card">
-          <div class="card-title">API & Sync</div>
+          <div class="card-title">Sync Behavior</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-            <div class="form-group">
-              <label>Toggl API Budget (calls/hr)</label>
-              <input type="number" id="cfg-apiBudget" value="${config.apiBudget}" min="1" max="240">
-              <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">
-                Toggl limit is 240/hr. Lower values leave room for other tools.
-              </div>
-            </div>
             <div class="form-group">
               <label>Sync Billable Only</label>
               <select id="cfg-billableOnly">
                 <option value="FALSE" ${config.syncBillableOnly !== 'TRUE' ? 'selected' : ''}>No — sync all entries</option>
                 <option value="TRUE" ${config.syncBillableOnly === 'TRUE' ? 'selected' : ''}>Yes — only billable</option>
               </select>
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">
+                If Yes, non-billable entries are skipped during sync.
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Batch Size</label>
+              <input type="number" id="cfg-batchSize" value="${config.batchSize || '50'}" min="10" max="200">
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">
+                Number of entries to process per sync batch.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Toggl Tag Names</div>
+          <p style="color:var(--text-secondary);margin-bottom:16px;font-size:13px">
+            Tags used to track sync status. Create these tags in Toggl first.
+          </p>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <div class="form-group">
+              <label>Approved Tag</label>
+              <input type="text" id="cfg-approvedTag" value="${config.approvedTag || 'Approved'}">
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">
+                Tag to mark entries ready for sync.
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Synced Tag</label>
+              <input type="text" id="cfg-syncedTag" value="${config.syncedTag || 'Synced'}">
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">
+                Tag added to entries after successful sync.
+              </div>
             </div>
           </div>
         </div>
@@ -737,16 +783,39 @@ const Pages = {
         <div class="card">
           <div class="card-title">Default Service Item</div>
           <p style="color:var(--text-secondary);margin-bottom:16px;font-size:13px">
-            Used for time entries without a mapped Toggl task
+            Used for time entries without a mapped Toggl task.
           </p>
           <div style="display:grid;grid-template-columns:1fr 2fr;gap:16px">
             <div class="form-group">
               <label>QBO Service Item ID</label>
-              <input type="text" id="cfg-defaultItemId" value="${config.defaultServiceItemId}">
+              <input type="text" id="cfg-defaultItemId" value="${config.defaultServiceItemId || ''}">
             </div>
             <div class="form-group">
               <label>QBO Service Item Name</label>
-              <input type="text" id="cfg-defaultItemName" value="${config.defaultServiceItemName}">
+              <input type="text" id="cfg-defaultItemName" value="${config.defaultServiceItemName || ''}">
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">API Settings</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+            <div class="form-group">
+              <label>Toggl API Budget (calls/hr)</label>
+              <input type="number" id="cfg-apiBudget" value="${config.apiBudget || '180'}" min="1" max="240">
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">
+                Toggl limit is 240/hr. Lower values leave room for other tools.
+              </div>
+            </div>
+            <div class="form-group">
+              <label>QuickBooks Environment</label>
+              <select id="cfg-qboEnv">
+                <option value="production" ${config.qboEnv !== 'sandbox' ? 'selected' : ''}>Production</option>
+                <option value="sandbox" ${config.qboEnv === 'sandbox' ? 'selected' : ''}>Sandbox (testing)</option>
+              </select>
+              <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">
+                Use Sandbox for testing with developer accounts.
+              </div>
             </div>
           </div>
         </div>
@@ -759,10 +828,14 @@ const Pages = {
 
   async saveSettings() {
     const fields = [
-      { id: 'cfg-apiBudget', key: 'TOGGL_API_BUDGET' },
       { id: 'cfg-billableOnly', key: 'SYNC_BILLABLE_ONLY' },
+      { id: 'cfg-batchSize', key: 'BATCH_SIZE' },
+      { id: 'cfg-approvedTag', key: 'APPROVED_TAG' },
+      { id: 'cfg-syncedTag', key: 'SYNCED_TAG' },
       { id: 'cfg-defaultItemId', key: 'DEFAULT_SERVICE_ITEM_ID' },
-      { id: 'cfg-defaultItemName', key: 'DEFAULT_SERVICE_ITEM_NAME' }
+      { id: 'cfg-defaultItemName', key: 'DEFAULT_SERVICE_ITEM_NAME' },
+      { id: 'cfg-apiBudget', key: 'TOGGL_API_BUDGET' },
+      { id: 'cfg-qboEnv', key: 'QBO_ENV' }
     ];
 
     try {

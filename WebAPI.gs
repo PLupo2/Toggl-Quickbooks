@@ -130,7 +130,7 @@ function handleApiRequest(params, isPost = false) {
         if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
         return jsonResponse(apiSyncApproved());
       case 'previewApproved':
-        return jsonResponse(apiPreviewApproved());
+        return jsonResponse(apiPreviewApproved(params));
       case 'refreshTogglMappings':
         if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
         return jsonResponse(apiRefreshTogglMappings());
@@ -343,8 +343,10 @@ function apiGetConfig() {
     syncedTag: getSyncedTagName(),
     apiBudget: getConfigValue('TOGGL_API_BUDGET', '180'),
     syncBillableOnly: getConfigValue('SYNC_BILLABLE_ONLY', 'FALSE'),
+    batchSize: getConfigValue('BATCH_SIZE', CONFIG.DEFAULTS.BATCH_SIZE || '50'),
     defaultServiceItemId: getConfigValue('DEFAULT_SERVICE_ITEM_ID', ''),
-    defaultServiceItemName: getConfigValue('DEFAULT_SERVICE_ITEM_NAME', '')
+    defaultServiceItemName: getConfigValue('DEFAULT_SERVICE_ITEM_NAME', ''),
+    qboEnv: getConfigValue('QBO_ENV', 'production')
   };
 }
 
@@ -367,8 +369,20 @@ function apiSyncApproved() {
 /**
  * Preview approved entries (returns data without syncing)
  */
-function apiPreviewApproved() {
-  const dateRange = getImportDateRange();
+function apiPreviewApproved(params) {
+  params = params || {};
+
+  // Use provided dates if available, otherwise fall back to saved config
+  let dateRange;
+  if (params.startDate && params.endDate) {
+    dateRange = {
+      startDate: new Date(params.startDate),
+      endDate: new Date(params.endDate)
+    };
+  } else {
+    dateRange = getImportDateRange();
+  }
+
   const approvedTag = getApprovedTagName();
   const syncedTag = getSyncedTagName();
 
