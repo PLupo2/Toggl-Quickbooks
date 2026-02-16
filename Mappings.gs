@@ -137,6 +137,12 @@ function refreshTogglMappings() {
     refreshProjectMappings();
     refreshTaskMappings();
 
+    // Remove mappings for deleted/archived Toggl entities
+    const removed = cleanupDeletedMappings();
+    if (removed > 0) {
+      logMessage(`Removed ${removed} orphaned mappings (deleted/archived in Toggl)`, 'INFO');
+    }
+
     // Wire dropdowns to include new rows
     wireAllDropdowns();
 
@@ -148,6 +154,26 @@ function refreshTogglMappings() {
     showAlert(`Failed to refresh Toggl mappings: ${error.message}`, 'Error');
     logMessage(`Toggl mappings refresh error: ${error.message}`, 'ERROR');
   }
+}
+
+/**
+ * Removes mapping rows for Toggl entities that no longer exist (deleted/archived).
+ * Called automatically during refresh — no UI prompt needed.
+ * @returns {number} Total rows removed
+ */
+function cleanupDeletedMappings() {
+  const currentUsers = new Set(getUsersForMapping().map(u => String(u[0])));
+  const currentClients = new Set(getClientsForMapping().map(c => String(c[0])));
+  const currentProjects = new Set(getProjectsForMapping().map(p => String(p[0])));
+  const currentTasks = new Set(getTasksForMapping().map(t => String(t[0])));
+
+  let totalRemoved = 0;
+  totalRemoved += cleanupSheet(CONFIG.SHEETS.MAPPINGS_USERS, currentUsers, 0);
+  totalRemoved += cleanupSheet(CONFIG.SHEETS.MAPPINGS_CLIENTS, currentClients, 0);
+  totalRemoved += cleanupSheet(CONFIG.SHEETS.MAPPINGS_PROJECTS, currentProjects, 0);
+  totalRemoved += cleanupSheet(CONFIG.SHEETS.MAPPINGS_TASKS, currentTasks, 0);
+
+  return totalRemoved;
 }
 
 /**
