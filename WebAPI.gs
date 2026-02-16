@@ -417,10 +417,14 @@ function apiPreviewApproved(params) {
   const projectMap = {};
   projects.forEach(p => { projectMap[p.id] = p.name; });
 
-  // Build task lookup
-  const tasks = fetchTogglTasks();
+  // Build task lookup (from mapping sheet - zero API calls)
+  const taskMappings = getTasksFromMappingSheet();
   const taskMap = {};
-  tasks.forEach(t => { taskMap[t.id] = t.name; });
+  taskMappings.forEach(t => {
+    if (t.togglTaskId) {
+      taskMap[t.togglTaskId] = t.togglTaskName;
+    }
+  });
 
   const entries = approvedEntries.map(entry => ({
     id: entry.id,
