@@ -302,7 +302,8 @@ function refreshProjectMappings() {
       projectName,        // Toggl Project Name
       '',                 // QBO Project Name (sub-customer) - user selects
       '',                 // QBO Project ID (sub-customer) - auto-populated
-      false,              // Matched checkbox
+      false,              // QBO Customer Name (checkbox for matched status)
+      '',                 // QBO Customer ID - auto-populated when mapped
       timestamp           // Last Updated
     ]);
   }

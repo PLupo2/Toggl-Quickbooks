@@ -561,7 +561,8 @@ const Pages = {
       mapping.rows.forEach(row => {
         const hasQboId = row[currentTab.qboIdCol];
         const hasQboName = row[currentTab.qboNameCol];
-        const isMatched = row['Matched'] === true;
+        // Handle both 'Matched' column and 'QBO Customer Name' (Projects tab uses this for matched checkbox)
+        const isMatched = row['Matched'] === true || row['QBO Customer Name'] === true;
 
         if (hasQboId || hasQboName || isMatched) {
           mapped.push(row);
@@ -580,18 +581,20 @@ const Pages = {
         const headers = mapping.headers.filter(h =>
           h !== '_row' &&
           h !== 'Last Updated' &&
+          h !== 'QBO Customer ID' &&  // Hide from display (internal tracking)
           !h.includes('Updated')  // Also catch any variations like "Last Updated " or "LastUpdated"
         );
         const rowsHtml = rows.map(row => {
-          const isMatched = row['Matched'] === true;
+          // Check for matched status - handle both 'Matched' column and 'QBO Customer Name' (Projects tab uses this for matched checkbox)
+          const isMatched = row['Matched'] === true || row['QBO Customer Name'] === true;
           const rowClass = isMatched ? 'row-matched' : '';
           const currentVal = row[currentTab.qboNameCol] || '';
 
           const cells = headers.map(h => {
             const val = row[h];
 
-            // Matched checkbox
-            if (h === 'Matched') {
+            // Matched checkbox - handle both column names
+            if (h === 'Matched' || h === 'QBO Customer Name') {
               return `<td><input type="checkbox" ${val ? 'checked' : ''}
                 onchange="Pages.updateMappingCell('${Pages._mappingTab}', ${row._row}, '${h}', this.checked)"></td>`;
             }
