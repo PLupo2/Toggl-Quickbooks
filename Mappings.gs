@@ -138,12 +138,44 @@ function refreshTogglMappings() {
     refreshUserMappings();
     refreshClientMappings();
     refreshProjectMappings();
-    refreshTaskMappings();
 
-    // Remove mappings for deleted/archived Toggl entities
-    const removed = cleanupDeletedMappings();
-    if (removed > 0) {
-      logMessage(`Removed ${removed} orphaned mappings (deleted/archived in Toggl)`, 'INFO');
+    // Check API budget before expensive task fetch (1 call per project)
+    const projectCount = (TOGGL_CACHE.projects || []).length;
+    if (isApproachingApiLimit(projectCount + 5)) {
+      logMessage(`Skipping task refresh: need ~${projectCount + 5} calls but approaching budget limit (${API_COUNTER.workspaceCalls} used)`, 'WARN');
+    } else {
+      refreshTaskMappings();
+    }
+
+    // Cleanup uses cached data from the refresh above (no extra API calls)
+    // Build ID sets from cached data instead of re-fetching
+    const cachedUsers = (TOGGL_CACHE.users || []).filter(u => u.active !== false);
+    const cachedClients = (TOGGL_CACHE.clients || []).filter(c => !c.archived);
+    const cachedProjects = TOGGL_CACHE.projects || [];
+
+    const currentUsers = new Set(cachedUsers.map(u => String(u.id)));
+    const currentClients = new Set(cachedClients.map(c => String(c.id)));
+    const currentProjects = new Set(cachedProjects.map(p => String(p.id)));
+
+    // For tasks, read from the mapping sheet instead of re-fetching from API
+    const taskSheet = getSpreadsheet().getSheetByName(CONFIG.SHEETS.MAPPINGS_TASKS);
+    const currentTasks = new Set();
+    if (taskSheet && taskSheet.getLastRow() > 1) {
+      const taskData = taskSheet.getRange(2, 1, taskSheet.getLastRow() - 1, 1).getValues();
+      taskData.forEach(row => { if (row[0]) currentTasks.add(String(row[0])); });
+    }
+
+    let totalRemoved = 0;
+    totalRemoved += cleanupSheet(CONFIG.SHEETS.MAPPINGS_USERS, currentUsers, 0);
+    totalRemoved += cleanupSheet(CONFIG.SHEETS.MAPPINGS_CLIENTS, currentClients, 0);
+    totalRemoved += markArchivedProjects(currentProjects);
+    // Only mark tasks archived if we actually refreshed tasks
+    if (!isApproachingApiLimit(1)) {
+      totalRemoved += markArchivedTasks(currentTasks);
+    }
+
+    if (totalRemoved > 0) {
+      logMessage(`Removed/archived ${totalRemoved} orphaned mappings`, 'INFO');
     }
 
     // Wire dropdowns to include new rows

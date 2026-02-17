@@ -760,6 +760,20 @@ function fetchAllTogglTasks() {
   const projects = fetchTogglProjects(true); // Only active projects
   const clients = fetchTogglClients();
 
+  // Budget check: fetching tasks requires 1 API call per project
+  if (isApproachingApiLimit(projects.length)) {
+    logMessage(`fetchAllTogglTasks: need ${projects.length} calls but only ${getApiBudget() - API_COUNTER.workspaceCalls} remaining. Using mapping sheet instead.`, 'WARN');
+    // Fall back to mapping sheet data instead of making expensive API calls
+    const sheetTasks = getTasksFromMappingSheet();
+    return sheetTasks.map(t => ({
+      id: t.togglTaskId,
+      name: t.togglTaskName,
+      projectId: null,
+      projectName: t.projectName || '',
+      clientName: t.clientName || ''
+    }));
+  }
+
   // Build lookups
   const clientMap = {};
   clients.forEach(c => {

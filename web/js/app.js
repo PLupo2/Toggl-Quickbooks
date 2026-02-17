@@ -188,10 +188,11 @@ const Pages = {
 
     try {
       // Fetch dashboard data and connection status in parallel
-      const [data, connStatus, preview] = await Promise.all([
+      // Note: previewApproved is NOT called here to avoid hitting the Toggl Reports API
+      // on every dashboard load. Pending count is shown on the Sync Entries page instead.
+      const [data, connStatus] = await Promise.all([
         API.get('getDashboard'),
-        API.get('getConnectionStatus'),
-        API.get('previewApproved')
+        API.get('getConnectionStatus')
       ]);
 
       // Connection status badges
@@ -246,9 +247,9 @@ const Pages = {
               <div class="stat-detail">${data.sync.logEntries.toLocaleString()} entries synced ${pendingHtml}</div>
             </div>
             <div class="stat">
-              <div class="stat-label">Pending</div>
-              <div class="stat-value" style="font-size:24px;color:${preview.count > 0 ? 'var(--warning)' : 'var(--success)'}">${preview.count}</div>
-              <div class="stat-detail">approved entries ready to sync</div>
+              <div class="stat-label">Date Range</div>
+              <div class="stat-value" style="font-size:14px">${data.sync.dateRange.start || '—'} to ${data.sync.dateRange.end || '—'}</div>
+              <div class="stat-detail">Go to Sync Entries to preview</div>
             </div>
             <div class="stat">
               <div class="stat-label">API Budget</div>
