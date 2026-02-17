@@ -78,8 +78,7 @@ const App = {
             <div class="brand-logo">
               <img src="logo.svg" alt="PL Theatrical TimeSync">
             </div>
-            <h1>PL Theatrical TimeSync</h1>
-            <div class="subtitle">Toggl → QBO Time Sync Dashboard</div>
+            <div class="subtitle">Toggl → QBO Dashboard</div>
           </div>
           <nav class="sidebar-nav">
             <div class="nav-section">Sync</div>

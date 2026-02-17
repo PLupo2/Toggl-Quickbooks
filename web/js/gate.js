@@ -46,7 +46,6 @@ const Gate = {
           <div style="margin-bottom:16px">
             <img src="logo.svg" alt="PL Theatrical TimeSync" style="width:144px;height:144px">
           </div>
-          <h1>PL Theatrical TimeSync</h1>
           <p>Enter the access password to continue.</p>
           ${error ? `<p style="color:var(--danger);font-size:13px;margin-bottom:16px">${error}</p>` : ''}
           <input type="password" id="gate-password" placeholder="Password"
