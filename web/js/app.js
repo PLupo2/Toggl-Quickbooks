@@ -109,13 +109,29 @@ const App = {
               Settings
             </button>
           </nav>
-          <div style="padding:12px 20px;border-top:1px solid var(--border);display:flex;gap:8px">
-            <button class="btn btn-sm" style="flex:1;justify-content:center" onclick="Gate.lock()">
-              Lock
-            </button>
-            <button class="btn btn-sm" style="flex:1;justify-content:center" onclick="App.disconnectConfirm()">
-              Disconnect
-            </button>
+          <div style="padding:12px 20px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:10px">
+            <div class="theme-toggle">
+              <button class="theme-toggle-btn" data-theme-choice="light" onclick="ThemeManager.set('light')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                Light
+              </button>
+              <button class="theme-toggle-btn" data-theme-choice="system" onclick="ThemeManager.set('system')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                System
+              </button>
+              <button class="theme-toggle-btn" data-theme-choice="dark" onclick="ThemeManager.set('dark')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                Dark
+              </button>
+            </div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-sm" style="flex:1;justify-content:center" onclick="Gate.lock()">
+                Lock
+              </button>
+              <button class="btn btn-sm" style="flex:1;justify-content:center" onclick="App.disconnectConfirm()">
+                Disconnect
+              </button>
+            </div>
           </div>
         </aside>
         <div class="main">
@@ -127,6 +143,10 @@ const App = {
         </div>
       </div>
       <div class="toast-container" id="toast-container"></div>`;
+
+    // Sync theme toggle active state with current preference
+    const saved = localStorage.getItem(ThemeManager.STORAGE_KEY) || 'system';
+    ThemeManager.apply(saved);
   },
 
   disconnectConfirm() {
@@ -493,13 +513,10 @@ const Pages = {
             </tr>`;
         }).join('');
 
-        // Triangle icons: ▼ (down, U+25BC) when expanded, ▶ (right, U+25B6) when collapsed
-        const toggleIcon = isExpanded ? '\u25BC' : '\u25B6';
-
         return `
           <div class="log-group ${isExpanded ? 'expanded' : ''}">
             <div class="log-group-header" onclick="Pages.toggleLogGroup('${key}')">
-              <span class="log-group-toggle">${toggleIcon}</span>
+              <span class="log-group-toggle">\u25B6</span>
               <span class="log-group-time">${formatSyncTime(key)}</span>
               <span class="log-group-count">${entries.length} entries</span>
               <span class="log-group-status">${statusBadge}</span>
@@ -1103,6 +1120,52 @@ function formatSyncTime(timestamp) {
     return String(timestamp);
   }
 }
+
+// ===========================================================================
+// Theme Manager — Light / Dark / System toggle
+// ===========================================================================
+
+const ThemeManager = {
+  STORAGE_KEY: 'tqs_theme',
+
+  init() {
+    const saved = localStorage.getItem(this.STORAGE_KEY) || 'system';
+    this.apply(saved);
+  },
+
+  set(mode) {
+    localStorage.setItem(this.STORAGE_KEY, mode);
+    this.apply(mode);
+  },
+
+  apply(mode) {
+    const root = document.documentElement;
+
+    if (mode === 'dark') {
+      root.setAttribute('data-theme', 'dark');
+    } else if (mode === 'light') {
+      root.setAttribute('data-theme', 'light');
+    } else {
+      // System preference
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      root.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
+    }
+
+    // Update toggle button active states
+    document.querySelectorAll('.theme-toggle-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.themeChoice === mode);
+    });
+  }
+};
+
+// Listen for system preference changes (only applies when mode is 'system')
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  const saved = localStorage.getItem(ThemeManager.STORAGE_KEY) || 'system';
+  if (saved === 'system') ThemeManager.apply('system');
+});
+
+// Initialize theme as early as possible
+ThemeManager.init();
 
 // ===========================================================================
 // Init — controlled by gate.js (password gate calls App.init() after auth)
