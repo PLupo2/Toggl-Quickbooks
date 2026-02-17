@@ -13,6 +13,10 @@ const Gate = {
   SESSION_KEY: 'tqs_session',
   SESSION_DURATION: 60 * 60 * 1000, // 1 hour in ms
 
+  // Pre-configured API credentials (set automatically after password auth)
+  API_URL: 'https://script.google.com/macros/s/AKfycbwSEAEDqOrmBvgKhhxvHTkNwbbvY9ss_w3CsWr625al3scJg_nqKgNGPASqHRyMxska/exec',
+  API_KEY: '6qjNK88mLvU7ksRuLaB3AwBbBtoX7RZa',
+
   async init() {
     if (this.hasValidSession()) {
       this.proceed();
@@ -82,6 +86,9 @@ const Gate = {
   },
 
   proceed() {
+    // Pre-fill API credentials so user skips setup screen
+    localStorage.setItem('tqs_api_url', this.API_URL);
+    localStorage.setItem('tqs_api_key', this.API_KEY);
     App.init();
   }
 };
