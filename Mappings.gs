@@ -132,6 +132,9 @@ function refreshTogglMappings() {
   showToast('Refreshing Toggl mappings...');
 
   try {
+    // Clear Toggl cache to ensure fresh data (detects archived projects, etc.)
+    clearTogglCache();
+
     refreshUserMappings();
     refreshClientMappings();
     refreshProjectMappings();
