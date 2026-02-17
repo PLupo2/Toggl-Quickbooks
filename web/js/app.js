@@ -75,8 +75,17 @@ const App = {
       <div class="app">
         <aside class="sidebar" id="sidebar">
           <div class="sidebar-header">
-            <h1>Toggl-QBO Sync</h1>
-            <div class="subtitle">Time Entry Sync Dashboard</div>
+            <div class="brand-logo">
+              <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="20" cy="20" r="18" stroke="currentColor" stroke-width="2.5"/>
+                <circle cx="20" cy="20" r="3" fill="currentColor"/>
+                <line x1="20" y1="20" x2="20" y2="10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                <line x1="20" y1="20" x2="27" y2="23" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                <path d="M34 14 L40 20 L34 26" stroke="var(--primary)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+              </svg>
+            </div>
+            <h1>PL Theatrical TimeSync</h1>
+            <div class="subtitle">Toggl → QBO Time Sync Dashboard</div>
           </div>
           <nav class="sidebar-nav">
             <div class="nav-section">Sync</div>
@@ -359,6 +368,18 @@ const Pages = {
         </div>
         ${previewHtml}
       </div>`;
+
+    // Initialize date pickers with Monday as first day of week
+    if (typeof flatpickr !== 'undefined') {
+      flatpickr('#sync-startDate', {
+        dateFormat: 'Y-m-d',
+        locale: { firstDayOfWeek: 1 }
+      });
+      flatpickr('#sync-endDate', {
+        dateFormat: 'Y-m-d',
+        locale: { firstDayOfWeek: 1 }
+      });
+    }
   },
 
   async refreshPreview() {

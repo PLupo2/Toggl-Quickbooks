@@ -43,7 +43,16 @@ const Gate = {
     document.getElementById('app').innerHTML = `
       <div class="setup-screen">
         <div class="setup-card">
-          <h1>Toggl-QBO Sync</h1>
+          <div style="margin-bottom:16px">
+            <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:56px;height:56px;color:var(--text)">
+              <circle cx="20" cy="20" r="18" stroke="currentColor" stroke-width="2.5"/>
+              <circle cx="20" cy="20" r="3" fill="currentColor"/>
+              <line x1="20" y1="20" x2="20" y2="10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+              <line x1="20" y1="20" x2="27" y2="23" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+              <path d="M34 14 L40 20 L34 26" stroke="var(--primary)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            </svg>
+          </div>
+          <h1>PL Theatrical TimeSync</h1>
           <p>Enter the access password to continue.</p>
           ${error ? `<p style="color:var(--danger);font-size:13px;margin-bottom:16px">${error}</p>` : ''}
           <input type="password" id="gate-password" placeholder="Password"
