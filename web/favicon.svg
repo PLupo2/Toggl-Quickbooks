@@ -1,20 +1,20 @@
 <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
   <!-- Clock face with thick retro border -->
-  <circle cx="22" cy="24" r="18" fill="#ffffff" stroke="#202124" stroke-width="3"/>
-  <circle cx="22" cy="24" r="14" stroke="#202124" stroke-width="1.5" stroke-dasharray="2 4"/>
+  <circle cx="20" cy="24" r="17" fill="#ffffff" stroke="#202124" stroke-width="3"/>
+  <circle cx="20" cy="24" r="13" stroke="#202124" stroke-width="1.5" stroke-dasharray="2 4"/>
 
   <!-- Hour markers -->
-  <circle cx="22" cy="10" r="2" fill="#202124"/>
-  <circle cx="22" cy="38" r="2" fill="#202124"/>
-  <circle cx="8" cy="24" r="2" fill="#202124"/>
-  <circle cx="36" cy="24" r="2" fill="#202124"/>
+  <circle cx="20" cy="11" r="2" fill="#202124"/>
+  <circle cx="20" cy="37" r="2" fill="#202124"/>
+  <circle cx="7" cy="24" r="2" fill="#202124"/>
+  <circle cx="33" cy="24" r="2" fill="#202124"/>
 
   <!-- Clock hands -->
-  <line x1="22" y1="24" x2="22" y2="14" stroke="#202124" stroke-width="3" stroke-linecap="round"/>
-  <line x1="22" y1="24" x2="30" y2="28" stroke="#202124" stroke-width="2.5" stroke-linecap="round"/>
-  <circle cx="22" cy="24" r="3" fill="#1a73e8"/>
+  <line x1="20" y1="24" x2="20" y2="15" stroke="#202124" stroke-width="3" stroke-linecap="round"/>
+  <line x1="20" y1="24" x2="27" y2="27" stroke="#202124" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="20" cy="24" r="3" fill="#1a73e8"/>
 
-  <!-- Swooping arrow -->
-  <path d="M32 8 C44 12, 46 28, 38 38" stroke="#1a73e8" stroke-width="3" stroke-linecap="round" fill="none"/>
-  <polygon points="35,41 42,38 38,32" fill="#1a73e8"/>
+  <!-- Swooping arrow pointing right -->
+  <path d="M28 10 C36 14, 40 20, 40 24" stroke="#1a73e8" stroke-width="3" stroke-linecap="round" fill="none"/>
+  <polygon points="44,24 38,20 38,28" fill="#1a73e8"/>
 </svg>
