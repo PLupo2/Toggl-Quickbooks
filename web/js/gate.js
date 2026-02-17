@@ -44,7 +44,7 @@ const Gate = {
       <div class="setup-screen">
         <div class="setup-card">
           <div style="margin-bottom:16px">
-            <img src="logo.svg" alt="PL Theatrical TimeSync" style="width:96px;height:96px">
+            <img src="logo.svg" alt="PL Theatrical TimeSync" style="width:144px;height:144px">
           </div>
           <h1>PL Theatrical TimeSync</h1>
           <p>Enter the access password to continue.</p>
