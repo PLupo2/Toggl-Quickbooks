@@ -76,12 +76,18 @@ const App = {
         <aside class="sidebar" id="sidebar">
           <div class="sidebar-header">
             <div class="brand-logo">
-              <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="20" cy="20" r="18" stroke="currentColor" stroke-width="2.5"/>
-                <circle cx="20" cy="20" r="3" fill="currentColor"/>
-                <line x1="20" y1="20" x2="20" y2="10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-                <line x1="20" y1="20" x2="27" y2="23" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-                <path d="M34 14 L40 20 L34 26" stroke="var(--primary)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+              <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="22" cy="24" r="18" fill="var(--surface)" stroke="currentColor" stroke-width="3"/>
+                <circle cx="22" cy="24" r="14" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 4"/>
+                <circle cx="22" cy="10" r="2" fill="currentColor"/>
+                <circle cx="22" cy="38" r="2" fill="currentColor"/>
+                <circle cx="8" cy="24" r="2" fill="currentColor"/>
+                <circle cx="36" cy="24" r="2" fill="currentColor"/>
+                <line x1="22" y1="24" x2="22" y2="14" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+                <line x1="22" y1="24" x2="30" y2="28" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                <circle cx="22" cy="24" r="3" fill="var(--primary)"/>
+                <path d="M32 8 C44 12, 46 28, 38 38" stroke="var(--primary)" stroke-width="3" stroke-linecap="round" fill="none"/>
+                <polygon points="35,41 42,38 38,32" fill="var(--primary)"/>
               </svg>
             </div>
             <h1>PL Theatrical TimeSync</h1>
