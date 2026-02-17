@@ -542,7 +542,23 @@ const Pages = {
 
   toggleLogGroup(key) {
     Pages._logExpanded[key] = !Pages._logExpanded[key];
-    Pages.log();
+    const isExpanded = Pages._logExpanded[key];
+
+    // Find the group element by its header's onclick attribute
+    const headers = document.querySelectorAll('.log-group-header');
+    for (const header of headers) {
+      if (header.getAttribute('onclick')?.includes(key)) {
+        const group = header.parentElement;
+        const content = group.querySelector('.log-group-content');
+        const toggle = group.querySelector('.log-group-toggle');
+
+        // Toggle expanded state
+        group.classList.toggle('expanded', isExpanded);
+        content.style.display = isExpanded ? 'block' : 'none';
+
+        break;
+      }
+    }
   },
 
   // ---------------------------------------------------------------------------
