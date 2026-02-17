@@ -44,19 +44,7 @@ const Gate = {
       <div class="setup-screen">
         <div class="setup-card">
           <div style="margin-bottom:16px">
-            <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" style="width:64px;height:64px;color:var(--text)">
-              <circle cx="20" cy="24" r="17" fill="var(--surface)" stroke="currentColor" stroke-width="3"/>
-              <circle cx="20" cy="24" r="13" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 4"/>
-              <circle cx="20" cy="11" r="2" fill="currentColor"/>
-              <circle cx="20" cy="37" r="2" fill="currentColor"/>
-              <circle cx="7" cy="24" r="2" fill="currentColor"/>
-              <circle cx="33" cy="24" r="2" fill="currentColor"/>
-              <line x1="20" y1="24" x2="20" y2="15" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
-              <line x1="20" y1="24" x2="27" y2="27" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-              <circle cx="20" cy="24" r="3" fill="var(--primary)"/>
-              <path d="M28 10 C36 14, 40 20, 40 24" stroke="var(--primary)" stroke-width="3" stroke-linecap="round" fill="none"/>
-              <polygon points="44,24 38,20 38,28" fill="var(--primary)"/>
-            </svg>
+            <img src="logo.svg" alt="PL Theatrical TimeSync" style="width:96px;height:96px">
           </div>
           <h1>PL Theatrical TimeSync</h1>
           <p>Enter the access password to continue.</p>
