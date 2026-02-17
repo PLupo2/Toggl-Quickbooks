@@ -7,9 +7,9 @@
  * 3. Copy the hash and replace PASS_HASH below
  */
 const Gate = {
-  // Default password: "PLTheatrical2025"
+  // Password: "-PLTheatrical757!-ts"
   // To generate a new hash, see instructions above
-  PASS_HASH: '115020a798d2d0a6f6216b3d4ee21aede9f21b54dd280d25c4bbb79dbabb4cab',
+  PASS_HASH: 'd251ab356f9720eff1b9bc9d970fb82ef8fbf78b1bfb8ecda22f8da69c9abc36',
   SESSION_KEY: 'tqs_session',
   SESSION_DURATION: 60 * 60 * 1000, // 1 hour in ms
 
