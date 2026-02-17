@@ -107,8 +107,11 @@ const App = {
               Settings
             </button>
           </nav>
-          <div style="padding:12px 20px;border-top:1px solid var(--border)">
-            <button class="btn btn-sm" style="width:100%;justify-content:center" onclick="App.disconnectConfirm()">
+          <div style="padding:12px 20px;border-top:1px solid var(--border);display:flex;gap:8px">
+            <button class="btn btn-sm" style="flex:1;justify-content:center" onclick="Gate.lock()">
+              Lock
+            </button>
+            <button class="btn btn-sm" style="flex:1;justify-content:center" onclick="App.disconnectConfirm()">
               Disconnect
             </button>
           </div>
@@ -1087,7 +1090,5 @@ function formatSyncTime(timestamp) {
 }
 
 // ===========================================================================
-// Init
+// Init — controlled by gate.js (password gate calls App.init() after auth)
 // ===========================================================================
-
-document.addEventListener('DOMContentLoaded', () => App.init());
