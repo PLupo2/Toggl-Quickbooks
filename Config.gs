@@ -93,7 +93,7 @@ const CONFIG = {
     MAPPINGS_TASKS: [
       'Toggl Task ID', 'Toggl Task Name', 'Toggl Project Name',
       'Toggl Client Name', 'QBO Service Item ID', 'QBO Service Item Name',
-      'Matched', 'Last Updated'
+      'Status', 'Matched', 'Last Updated'
     ],
     QBO_CUSTOMERS: ['QBO Customer ID', 'QBO Customer Name'],
     QBO_EMPLOYEES: ['QBO Employee ID', 'QBO Employee Name'],

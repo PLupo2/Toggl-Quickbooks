@@ -175,9 +175,9 @@ function cleanupDeletedMappings() {
   let totalRemoved = 0;
   totalRemoved += cleanupSheet(CONFIG.SHEETS.MAPPINGS_USERS, currentUsers, 0);
   totalRemoved += cleanupSheet(CONFIG.SHEETS.MAPPINGS_CLIENTS, currentClients, 0);
-  // Projects are marked as Archived instead of deleted (preserves mapping history)
+  // Projects and Tasks are marked as Archived instead of deleted (preserves mapping history)
   totalRemoved += markArchivedProjects(currentProjects);
-  totalRemoved += cleanupSheet(CONFIG.SHEETS.MAPPINGS_TASKS, currentTasks, 0);
+  totalRemoved += markArchivedTasks(currentTasks);
 
   return totalRemoved;
 }
@@ -219,6 +219,53 @@ function markArchivedProjects(activeProjectIds) {
       if (currentStatus === 'Archived') {
         sheet.getRange(rowNum, statusColIndex + 1).setValue('Active');
         logMessage(`Reactivated project ${projectId}`, 'INFO');
+      } else if (!currentStatus || currentStatus === '') {
+        // Set status for legacy rows that don't have a status
+        sheet.getRange(rowNum, statusColIndex + 1).setValue('Active');
+      }
+    }
+  }
+
+  return archivedCount;
+}
+
+/**
+ * Marks tasks as "Archived" when they no longer exist in Toggl (parent project archived).
+ * Preserves mapping history for completed project tasks.
+ * Also reactivates tasks that were archived but are now active again.
+ * @param {Set} activeTaskIds - Set of currently active Toggl task IDs
+ * @returns {number} Number of tasks marked as archived
+ */
+function markArchivedTasks(activeTaskIds) {
+  const ss = getSpreadsheet();
+  const sheet = ss.getSheetByName(CONFIG.SHEETS.MAPPINGS_TASKS);
+
+  if (!sheet || sheet.getLastRow() <= 1) {
+    return 0;
+  }
+
+  const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  const statusColIndex = 6; // 0-based: Status is column 7 (index 6)
+  let archivedCount = 0;
+
+  for (let i = 0; i < data.length; i++) {
+    const taskId = String(data[i][0]);
+    const currentStatus = data[i][statusColIndex];
+    const rowNum = i + 2;
+
+    if (!taskId) continue;
+
+    if (!activeTaskIds.has(taskId)) {
+      // Task no longer active in Toggl - mark as Archived
+      if (currentStatus !== 'Archived') {
+        sheet.getRange(rowNum, statusColIndex + 1).setValue('Archived');
+        archivedCount++;
+      }
+    } else {
+      // Task is active in Toggl - ensure status is Active (reactivate if needed)
+      if (currentStatus === 'Archived') {
+        sheet.getRange(rowNum, statusColIndex + 1).setValue('Active');
+        logMessage(`Reactivated task ${taskId}`, 'INFO');
       } else if (!currentStatus || currentStatus === '') {
         // Set status for legacy rows that don't have a status
         sheet.getRange(rowNum, statusColIndex + 1).setValue('Active');
@@ -410,6 +457,7 @@ function refreshTaskMappings() {
       clientName,
       autoMatch?.id || '',
       autoMatch?.name || '',
+      'Active',         // Status (Active, Archived)
       !!autoMatch,      // Matched checkbox (pre-checked if auto-matched)
       timestamp
     ]);
@@ -419,8 +467,8 @@ function refreshTaskMappings() {
     const lastRow = sheet.getLastRow();
     sheet.getRange(lastRow + 1, 1, newRows.length, newRows[0].length).setValues(newRows);
 
-    // Insert checkboxes for Matched column (col 7)
-    sheet.getRange(lastRow + 1, 7, newRows.length, 1).insertCheckboxes();
+    // Insert checkboxes for Matched column (col 8)
+    sheet.getRange(lastRow + 1, 8, newRows.length, 1).insertCheckboxes();
 
     logMessage(`Added ${newRows.length} new task mappings`, 'INFO');
   }
@@ -1087,7 +1135,7 @@ function applyUnmappedRowHighlighting() {
   applyMappingHighlights(ss, CONFIG.SHEETS.MAPPINGS_USERS, 4, 5, 6);      // QBO Employee ID/Name, Matched col 6
   applyMappingHighlights(ss, CONFIG.SHEETS.MAPPINGS_CLIENTS, 3, 4, 5);    // QBO Customer ID/Name, Matched col 5
   applyProjectMappingHighlights(ss);  // Projects use Status column, handled separately
-  applyMappingHighlights(ss, CONFIG.SHEETS.MAPPINGS_TASKS, 5, 6, 7);      // QBO Service Item ID/Name, Matched col 7
+  applyTaskMappingHighlights(ss);     // Tasks use Status column, handled separately
 
   showToast('Mapping sheet highlighting applied!');
 }
@@ -1133,6 +1181,54 @@ function applyProjectMappingHighlights(ss) {
   sheet.setConditionalFormatRules([greyRule, redRule]);
 
   logMessage('Applied mapping highlights to Projects', 'INFO');
+}
+
+/**
+ * Applies conditional formatting to Tasks mapping sheet
+ * Uses Status column for archive detection
+ * - Grey: Status is "Archived"
+ * - Red: QBO Service Item ID/Name is empty AND Status is not "Archived"
+ */
+function applyTaskMappingHighlights(ss) {
+  const sheet = ss.getSheetByName(CONFIG.SHEETS.MAPPINGS_TASKS);
+  if (!sheet) return;
+
+  const grey = '#e0e0e0';       // Grey for archived
+  const pastelRed = '#ffcccc';  // Red for needs attention
+  const lastCol = sheet.getLastColumn() || 9;
+
+  // Clear existing conditional formatting rules
+  sheet.clearConditionalFormatRules();
+
+  // Range for data rows (excluding header)
+  const range = sheet.getRange(2, 1, DROPDOWN_MAX_ROWS, lastCol);
+
+  // Column letters: E=QBO Service Item ID, F=QBO Service Item Name, G=Status
+  // Rule 1 (higher priority): Grey when Status is "Archived"
+  const greyFormula = '=AND(A2<>"", $G2="Archived")';
+  const greyRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied(greyFormula)
+    .setBackground(grey)
+    .setRanges([range])
+    .build();
+
+  // Rule 2: Red when unmapped (no QBO ID or Name) AND not Archived
+  const redFormula = '=AND(A2<>"", $G2<>"Archived", $E2="", $F2="")';
+  const redRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied(redFormula)
+    .setBackground(pastelRed)
+    .setRanges([range])
+    .build();
+
+  // Grey rule first (higher priority), then red
+  sheet.setConditionalFormatRules([greyRule, redRule]);
+
+  // Ensure checkbox column (H) has checkboxes for existing data rows
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2, 8, sheet.getLastRow() - 1, 1).insertCheckboxes();
+  }
+
+  logMessage('Applied mapping highlights to Tasks', 'INFO');
 }
 
 /**

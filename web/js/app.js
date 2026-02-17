@@ -529,6 +529,8 @@ const Pages = {
 
     const currentTab = tabs.find(t => t.key === Pages._mappingTab) || tabs[0];
     const isProjectsTab = Pages._mappingTab === 'Mappings_Projects';
+    const isTasksTab = Pages._mappingTab === 'Mappings_Tasks_Services';
+    const hasStatusColumn = isProjectsTab || isTasksTab;
 
     const tabHtml = tabs.map(t =>
       `<button class="tab ${t.key === Pages._mappingTab ? 'active' : ''}"
@@ -568,8 +570,8 @@ const Pages = {
         const isMatched = row['Matched'] === true;
         const status = row['Status'] || '';
 
-        // For Projects tab, separate by Status (Active vs Archived)
-        if (isProjectsTab && status === 'Archived') {
+        // For Projects and Tasks tabs, separate by Status (Active vs Archived)
+        if (hasStatusColumn && status === 'Archived') {
           archived.push(row);
         } else if (hasQboId || hasQboName || isMatched) {
           mapped.push(row);
@@ -659,7 +661,7 @@ const Pages = {
 
       const unmappedHtml = renderSection(unmapped, '⚠ Needs Mapping', 'unmapped');
       const mappedHtml = renderSection(mapped, '✓ Mapped', 'mapped');
-      const archivedHtml = isProjectsTab
+      const archivedHtml = hasStatusColumn
         ? renderSection(archived, '📦 Archived/Completed', 'archived', true, Pages._archivedExpanded)
         : '';
 
