@@ -330,16 +330,16 @@ function refreshUserMappings() {
       continue; // Skip existing
     }
 
-    // Try auto-match with QBO employees
+    // Try auto-match with QBO employees (suggest only — user must approve)
     const autoMatch = tryAutoMatchEmployee(userName, email);
 
     newRows.push([
       userId,
       userName,
       email,
-      autoMatch?.id || '',
-      autoMatch?.name || '',
-      !!autoMatch,      // Matched checkbox (pre-checked if auto-matched)
+      '',                       // QBO Employee ID — left blank until user approves
+      autoMatch?.name || '',    // QBO Employee Name — pre-populated as suggestion
+      false,                    // Matched — user must check to confirm
       timestamp
     ]);
   }
@@ -380,15 +380,15 @@ function refreshClientMappings() {
       continue;
     }
 
-    // Try auto-match with QBO customers
+    // Try auto-match with QBO customers (suggest only — user must approve)
     const autoMatch = tryAutoMatchCustomer(clientName);
 
     newRows.push([
       clientId,
       clientName,
-      autoMatch?.id || '',
-      autoMatch?.name || '',
-      !!autoMatch,      // Matched checkbox (pre-checked if auto-matched)
+      '',                       // QBO Customer ID — left blank until user approves
+      autoMatch?.name || '',    // QBO Customer Name — pre-populated as suggestion
+      false,                    // Matched — user must check to confirm
       timestamp
     ]);
   }
@@ -479,7 +479,7 @@ function refreshTaskMappings() {
       continue;
     }
 
-    // Try auto-match with QBO service items
+    // Try auto-match with QBO service items (suggest only — user must approve)
     const autoMatch = tryAutoMatchServiceItem(taskName);
 
     newRows.push([
@@ -487,10 +487,10 @@ function refreshTaskMappings() {
       taskName,
       projectName,
       clientName,
-      autoMatch?.id || '',
-      autoMatch?.name || '',
+      '',                       // QBO Service Item ID — left blank until user approves
+      autoMatch?.name || '',    // QBO Service Item Name — pre-populated as suggestion
       'Active',         // Status (Active, Archived)
-      !!autoMatch,      // Matched checkbox (pre-checked if auto-matched)
+      false,                    // Matched — user must check to confirm
       timestamp
     ]);
   }
