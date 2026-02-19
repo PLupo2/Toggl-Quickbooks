@@ -272,8 +272,15 @@ const Pages = {
             </div>
             <div class="stat">
               <div class="stat-label">API Budget</div>
-              <div class="stat-value" style="font-size:16px">${data.api.budget}/hr</div>
-              <div class="stat-detail">Last sync: ${data.api.lastSyncCalls || '—'} calls</div>
+              <div class="stat-value" style="font-size:16px">${data.api.lastSyncCalls || 0}/${data.api.budget}</div>
+              ${(() => {
+                const used = parseInt(data.api.lastSyncCalls) || 0;
+                const budget = parseInt(data.api.budget) || 180;
+                const pct = budget > 0 ? Math.round((used / budget) * 100) : 0;
+                const barClass = pct >= 90 ? 'progress-bar-danger' : pct >= 60 ? 'progress-bar-warning' : 'progress-bar-success';
+                return `<div class="progress"><div class="progress-bar ${barClass}" style="width:${pct}%"></div></div>`;
+              })()}
+              <div class="stat-detail">${data.api.lastSyncCalls ? 'Last sync used ' + data.api.lastSyncCalls + ' of ' + data.api.budget + ' calls/hr' : 'No sync data yet'}</div>
             </div>
           </div>
         </div>
@@ -617,19 +624,29 @@ const Pages = {
 
       mapping.rows.forEach(row => {
         const hasQboId = row[currentTab.qboIdCol];
-        const hasQboName = row[currentTab.qboNameCol];
-        const isMatched = row['Matched'] === true;
         const status = row['Status'] || '';
 
         // For Projects and Tasks tabs, separate by Status (Active vs Archived)
         if (hasStatusColumn && status === 'Archived') {
           archived.push(row);
-        } else if (hasQboId || hasQboName || isMatched) {
+        } else if (hasQboId) {
+          // Only consider "mapped" if QBO ID is set (user-confirmed)
+          // Auto-suggested items have QBO Name but no ID — they stay in Needs Mapping
           mapped.push(row);
         } else {
           unmapped.push(row);
         }
       });
+
+      // Sort each section by Last Updated (most recent first)
+      const sortByRecent = (a, b) => {
+        const aDate = a['Last Updated'] || '';
+        const bDate = b['Last Updated'] || '';
+        return String(bDate).localeCompare(String(aDate));
+      };
+      unmapped.sort(sortByRecent);
+      mapped.sort(sortByRecent);
+      archived.sort(sortByRecent);
 
       // Get dropdown options for this tab
       const options = qboOptions[currentTab.qboType] || [];
@@ -730,7 +747,25 @@ const Pages = {
 
   toggleArchivedSection() {
     Pages._archivedExpanded = !Pages._archivedExpanded;
-    Pages.mappings();
+    const isExpanded = Pages._archivedExpanded;
+
+    // Direct DOM toggle — no re-fetch
+    const headers = document.querySelectorAll('.mapping-section-header.archived');
+    for (const header of headers) {
+      const section = header.parentElement;
+      const content = section.querySelector('.mapping-section-content');
+      const toggle = header.querySelector('.section-toggle');
+
+      content.style.display = isExpanded ? 'block' : 'none';
+      if (toggle) toggle.textContent = isExpanded ? '\u25BC' : '\u25B6';
+
+      // Check for pending entries on first expand (background, non-blocking)
+      if (isExpanded && Pages._mappingTab === 'Mappings_Projects') {
+        Pages.checkArchivedProjectsPending(
+          Array.from(content.querySelectorAll('tr')).map(() => null) // triggers via existing cache
+        );
+      }
+    }
   },
 
   async checkArchivedProjectsPending(archivedProjects) {

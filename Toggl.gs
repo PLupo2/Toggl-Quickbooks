@@ -1596,7 +1596,7 @@ function syncSingleEntry(entry, mappings) {
     serviceItemId: serviceItemId,
     date: entry.date,
     hours: entry.durationSeconds / 3600,  // Convert seconds to hours
-    description: entry.description,
+    description: `${entry.togglUser}: ${entry.description || ''}`.trim(),
     billable: entry.billable
   };
 

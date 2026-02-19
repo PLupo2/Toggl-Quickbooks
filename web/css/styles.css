@@ -974,6 +974,7 @@ tr.row-unmapped td {
   border: 1px solid var(--border-light);
   border-top: none;
   border-radius: 0 0 var(--radius-md) var(--radius-md);
+  animation: logGroupReveal 0.25s var(--ease-out);
 }
 
 /* Archived section */
@@ -991,9 +992,11 @@ tr.row-unmapped td {
 }
 
 .mapping-section-header .section-toggle {
+  display: inline-block;
   margin-right: 4px;
   font-size: 12px;
   color: var(--text-muted);
+  transition: transform 0.3s var(--ease-out);
 }
 
 .mapping-section-header.archived + .mapping-section-content {
