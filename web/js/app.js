@@ -667,7 +667,12 @@ const Pages = {
         const rowsHtml = rows.map(row => {
           const isMatched = row['Matched'] === true;
           const rowClass = isMatched ? 'row-matched' : '';
+          const hasQboId = row[currentTab.qboIdCol];
           const currentVal = row[currentTab.qboNameCol] || '';
+          // For unmapped items (no QBO ID), don't pre-select the suggestion in the dropdown
+          // so that selecting it actually triggers onchange
+          const suggestedVal = !hasQboId ? currentVal : '';
+          const dropdownVal = hasQboId ? currentVal : '';
           const projectId = row['Toggl Project ID'];
           const pendingWarning = Pages._projectPendingCache[projectId];
 
@@ -682,9 +687,12 @@ const Pages = {
 
             // QBO Name column — always show dropdown for editing
             if (h === currentTab.qboNameCol) {
-              const optionsHtml = options.map(opt =>
-                `<option value="${opt.name}" ${opt.name === currentVal ? 'selected' : ''}>${opt.name}</option>`
-              ).join('');
+              const optionsHtml = options.map(opt => {
+                const isSuggested = suggestedVal && opt.name === suggestedVal;
+                const isSelected = opt.name === dropdownVal;
+                const label = isSuggested ? `${opt.name} ← suggested` : opt.name;
+                return `<option value="${opt.name}" ${isSelected ? 'selected' : ''}>${label}</option>`;
+              }).join('');
               return `<td>
                 <select class="mapping-select" onchange="Pages.selectQboMapping('${Pages._mappingTab}', ${row._row}, '${currentTab.qboIdCol}', '${currentTab.qboNameCol}', this.value)">
                   <option value="">-- Select --</option>
