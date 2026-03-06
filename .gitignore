@@ -20,3 +20,4 @@ Thumbs.db
 *.log
 .claude/
 kanban-board/
+.clasp.json
