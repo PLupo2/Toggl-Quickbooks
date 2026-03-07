@@ -1,11 +1,6 @@
 /**
- * Menu.gs - Custom menu and UI triggers
- * Creates the Toggl-QBO Sync menu and handles user interactions
- *
- * NEW WORKFLOW: Tag-based sync
- * 1. In Toggl, tag entries with "Approved" when ready to sync
- * 2. Run "Sync Approved Entries" from menu
- * 3. Script syncs to QBO and adds "Synced" tag back to Toggl
+ * @fileoverview Custom Google Sheets menu and UI triggers for the Toggl-QBO tag-based sync workflow.
+ * @author pltheatrical2
  */
 
 // ============================================================================

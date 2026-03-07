@@ -1,6 +1,6 @@
 /**
- * Mappings.gs - Mapping sheet management and smart refresh
- * Handles Toggl ↔ QBO entity mappings with deduplication and auto-matching
+ * @fileoverview Mapping sheet management and smart refresh, handling Toggl to QBO entity mappings with deduplication and auto-matching.
+ * @author pltheatrical2
  */
 
 // ============================================================================

@@ -1,7 +1,6 @@
 /**
- * Config.gs - Script Properties helpers and configuration management
- * Provides centralized access to configuration values stored in Script Properties
- * and the Config sheet.
+ * @fileoverview Script Properties helpers and configuration management, providing centralized access to values stored in Script Properties and the Config sheet.
+ * @author pltheatrical2
  */
 
 // ============================================================================

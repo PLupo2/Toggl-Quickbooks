@@ -1,12 +1,6 @@
 /**
- * WebAPI.gs - REST-like API layer for the Netlify web interface
- *
- * Extends doGet/doPost to serve JSON API requests from the frontend.
- * The Netlify app talks only to this API, which talks to the Google Sheet.
- * All Toggl/QBO auth stays in the Google Sheet — the frontend never touches APIs directly.
- *
- * Authentication: Requests must include an "api_key" parameter matching the
- * WEB_API_KEY value stored in Script Properties.
+ * @fileoverview Web app endpoint (doGet/doPost) serving as a REST-like API layer between the static web UI and the Google Sheet backend.
+ * @author pltheatrical2
  */
 
 // ============================================================================

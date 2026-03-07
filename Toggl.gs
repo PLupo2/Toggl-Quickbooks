@@ -1,11 +1,6 @@
 /**
- * Toggl.gs - Toggl Track API calls and import logic
- * Supports both API v9 (current user) and Reports API v3 (all workspace users)
- *
- * API Rate Limiting:
- * - Workspace requests: 240/hr (paid plan) - includes writes, updates, reports
- * - Profile requests: 30/hr - personal data endpoints (/me/*)
- * - This script tracks workspace API calls and can pause/resume if limits are hit
+ * @fileoverview Toggl Track API client and import logic, supporting time entry retrieval, tag management, and API rate limit tracking.
+ * @author pltheatrical2
  */
 
 // ============================================================================

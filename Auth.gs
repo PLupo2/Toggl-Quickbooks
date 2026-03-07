@@ -1,6 +1,6 @@
 /**
- * Auth.gs - OAuth 2.0 flow and token management for QuickBooks Online
- * Handles authorization, token refresh, and secure token storage.
+ * @fileoverview OAuth 2.0 flow and token management for QuickBooks Online, handling authorization, token refresh, and secure token storage.
+ * @author pltheatrical2
  */
 
 // ============================================================================

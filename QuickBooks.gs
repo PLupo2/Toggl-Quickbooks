@@ -1,6 +1,6 @@
 /**
- * QuickBooks.gs - QuickBooks Online API calls
- * Handles queries, TimeActivity creation, and GraphQL for Projects
+ * @fileoverview QuickBooks Online API client, handling entity queries, TimeActivity record creation, and list management.
+ * @author pltheatrical2
  */
 
 // ============================================================================
