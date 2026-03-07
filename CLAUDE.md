@@ -90,8 +90,6 @@ No automated tests. Manual test cases documented in docs/TEST_CASES.md.
 - L3 for OAuth flow changes or web UI architecture changes
 - Opus for changes touching both Apps Script and web UI simultaneously
 
-## ⚠️ LIVE SYSTEM — Handle With Care
-
 TimeSync is actively used in production. Until Phase 1.5.4 (cutover validation) is complete, this repo on the Mac Mini is a clone — the MacBook Claude Code workflow remains the primary development path. Do not clasp push from the Mac Mini until cutover is explicitly authorized.
 
 ## Deployment Notes
