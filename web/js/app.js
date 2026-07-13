@@ -443,23 +443,11 @@ const Pages = {
   },
 
   async runSync() {
-    const btn = document.getElementById('sync-btn');
-    if (btn) {
-      btn.disabled = true;
-      btn.innerHTML = '<div class="spinner"></div> Syncing...';
-    }
-
-    try {
-      const result = await API.post('syncApproved');
-      Toast.success(result.message || 'Sync completed!');
-      Pages.sync(); // Reload preview
-    } catch (err) {
-      Toast.error('Sync failed: ' + err.message);
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = 'Sync Now';
-      }
-    }
+    // syncApproved is no longer callable from the dashboard — the web API
+    // key is a public static token and this action writes real QBO
+    // TimeActivity records. Run it from the Sheet: Toggl-QBO Sync > Sync
+    // Operations > Sync Approved Entries.
+    Toast.error('Sync now runs from the Sheet menu: Toggl-QBO Sync > Sync Operations > Sync Approved Entries.');
   },
 
   // ---------------------------------------------------------------------------
@@ -789,41 +777,16 @@ const Pages = {
   },
 
   async selectQboMapping(sheet, row, idCol, nameCol, selectedName) {
-    if (!selectedName) return;
-
-    // Find the ID for the selected name
-    const currentTab = Pages._mappingTab;
-    const tabs = {
-      'Mappings_Users': 'employees',
-      'Mappings_Clients': 'customers',
-      'Mappings_Projects': 'projects',
-      'Mappings_Tasks_Services': 'serviceItems'
-    };
-    const qboType = tabs[currentTab];
-    const options = Pages._qboOptions?.[qboType] || [];
-    const selected = options.find(o => o.name === selectedName);
-
-    try {
-      // Update both ID and Name columns
-      if (selected) {
-        await API.post('updateMapping', { sheet, row: String(row), col: idCol, value: selected.id });
-      }
-      await API.post('updateMapping', { sheet, row: String(row), col: nameCol, value: selectedName });
-      Toast.success('Mapping updated');
-      Pages.mappings(); // Refresh to move to mapped section
-    } catch (err) {
-      Toast.error('Update failed: ' + err.message);
-    }
+    // updateMapping is no longer callable from the dashboard — it was an
+    // arbitrary single-cell write with no validation. Edit the mapping
+    // directly in the Sheet instead.
+    Toast.error('Mapping edits now happen directly in the Sheet — this dashboard view is read-only.');
+    Pages.mappings(); // Re-render to reset the control to its saved value
   },
 
   async updateMappingCell(sheet, row, col, value) {
-    try {
-      await API.post('updateMapping', { sheet, row: String(row), col, value: String(value) });
-      Toast.success('Updated');
-      Pages.mappings(); // Refresh
-    } catch (err) {
-      Toast.error('Update failed: ' + err.message);
-    }
+    Toast.error('Mapping edits now happen directly in the Sheet — this dashboard view is read-only.');
+    Pages.mappings(); // Re-render to reset the control to its saved value
   },
 
   // ---------------------------------------------------------------------------

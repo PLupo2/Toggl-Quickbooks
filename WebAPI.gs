@@ -122,9 +122,16 @@ function handleApiRequest(params, isPost = false) {
         return jsonResponse(apiGetProjectPendingEntries(params.projectId));
 
       // ---- WRITE operations (POST) ----
+      // syncApproved and updateMapping are intentionally NOT exposed here.
+      // The web API key is a single static bearer token shipped in public
+      // client JS (documented in CLAUDE.md) — fine for read actions, not
+      // safe for triggering real QBO writes or arbitrary mapping-cell
+      // writes. Both actions remain available from the bound Sheet's
+      // Toggl-QBO Sync menu, which is gated by real Google account auth.
       case 'syncApproved':
-        if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
-        return jsonResponse(apiSyncApproved());
+        return jsonResponse({ error: 'syncApproved is no longer available via the web API. Run it from the Sheet: Toggl-QBO Sync > Sync Operations > Sync Approved Entries.' }, 410);
+      case 'updateMapping':
+        return jsonResponse({ error: 'updateMapping is no longer available via the web API. Edit the mapping cell directly in the Sheet.' }, 410);
       case 'previewApproved':
         return jsonResponse(apiPreviewApproved(params));
       case 'refreshTogglMappings':
@@ -136,9 +143,6 @@ function handleApiRequest(params, isPost = false) {
       case 'wireDropdowns':
         if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
         return jsonResponse(apiWireDropdowns());
-      case 'updateMapping':
-        if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
-        return jsonResponse(apiUpdateMapping(params));
       case 'setConfig':
         if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
         return jsonResponse(apiSetConfig(params.key, params.value));
@@ -351,28 +355,6 @@ function apiGetConfig() {
 // ============================================================================
 
 /**
- * Triggers sync of approved entries
- */
-function apiSyncApproved() {
-  let results;
-  try {
-    results = syncApprovedEntries({ fromWebApi: true });
-  } catch (e) {
-    // Catch any stray UI errors (SpreadsheetApp.getUi) that might occur
-    // during sync notifications - the sync itself may have succeeded
-    logMessage(`Sync completed with notification error: ${e.message}`, 'WARN');
-  }
-
-  return {
-    message: 'Sync completed',
-    synced: results?.synced || 0,
-    failed: results?.failed || 0,
-    lastSync: getConfigValue('LAST_SYNC_DATE', ''),
-    apiCalls: getConfigValue('LAST_SYNC_API_CALLS', '')
-  };
-}
-
-/**
  * Preview approved entries (returns data without syncing)
  */
 function apiPreviewApproved(params) {
@@ -474,43 +456,6 @@ function apiRefreshQBOMasterLists() {
 function apiWireDropdowns() {
   wireAllDropdowns();
   return { message: 'Dropdowns wired' };
-}
-
-/**
- * Updates a single mapping cell
- * Params: sheet (sheet name), row (row number), col (column name or number), value
- */
-function apiUpdateMapping(params) {
-  const { sheet: sheetName, row, col, value } = params;
-
-  const validSheets = [
-    CONFIG.SHEETS.MAPPINGS_USERS,
-    CONFIG.SHEETS.MAPPINGS_CLIENTS,
-    CONFIG.SHEETS.MAPPINGS_PROJECTS,
-    CONFIG.SHEETS.MAPPINGS_TASKS
-  ];
-
-  if (!validSheets.includes(sheetName)) {
-    throw new Error(`Invalid sheet: ${sheetName}`);
-  }
-
-  const ss = getSpreadsheet();
-  const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
-
-  const rowNum = parseInt(row);
-  let colNum = parseInt(col);
-
-  // If col is a string (header name), find the column number
-  if (isNaN(colNum)) {
-    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    colNum = headers.indexOf(col) + 1;
-    if (colNum === 0) throw new Error(`Column not found: ${col}`);
-  }
-
-  sheet.getRange(rowNum, colNum).setValue(value === 'true' ? true : value === 'false' ? false : value);
-
-  return { message: `Updated ${sheetName} row ${rowNum} col ${colNum}` };
 }
 
 /**

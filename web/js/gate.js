@@ -14,8 +14,14 @@ const Gate = {
   SESSION_DURATION: 60 * 60 * 1000, // 1 hour in ms
 
   // Pre-configured API credentials (set automatically after password auth)
+  // This key is a public UX gate for read-only dashboard actions, not a
+  // security boundary — see CLAUDE.md "Web API Key" note. It is
+  // necessarily visible to anyone who loads this page; do not treat its
+  // exposure here as an incident. Rotating it requires updating BOTH this
+  // value and the WEB_API_KEY Script Property in the same deploy, or the
+  // dashboard breaks.
   API_URL: 'https://script.google.com/macros/s/AKfycbwSEAEDqOrmBvgKhhxvHTkNwbbvY9ss_w3CsWr625al3scJg_nqKgNGPASqHRyMxska/exec',
-  API_KEY: '6qjNK88mLvU7ksRuLaB3AwBbBtoX7RZa',
+  API_KEY: 'ol9rg7rlTCb4HpHCQJOxQ0JuVsyv5wwT',
 
   async init() {
     if (this.hasValidSession()) {
