@@ -70,6 +70,30 @@ function validateApiKey(params) {
 }
 
 /**
+ * Validates the origin secret from the request (Phase 2, Cloudflare Access
+ * migration). This is the real auth boundary: it's stamped by the Cloudflare
+ * Worker from a server-side env var and never reaches the browser, so a
+ * direct hit on this ANYONE_ANONYMOUS deployment — bypassing the Worker and
+ * Cloudflare Access entirely — gets rejected even if the caller somehow has
+ * the (lower-stakes) WEB_API_KEY.
+ *
+ * NOTE: Apps Script's doGet/doPost event object exposes no request-header
+ * API (no e.headers) — there is no way for this script to read an actual
+ * HTTP header. The Worker therefore sends the shared secret as a normal
+ * request param (origin_secret), not a literal X-PLT-Origin header, even
+ * though the Worker's own code labels the env var the same way the spec
+ * does. Same property (server-side-only secret, two ends), different wire
+ * format, because the alternative doesn't exist on this runtime.
+ */
+function validateOrigin(params) {
+  const storedSecret = getScriptProperty('WORKER_SECRET');
+  if (!storedSecret) {
+    return false; // Not configured yet — fail closed, not open
+  }
+  return params.origin_secret === storedSecret;
+}
+
+/**
  * Returns a JSON ContentService response with CORS headers
  */
 function jsonResponse(data, statusCode = 200) {
@@ -94,7 +118,15 @@ function jsonResponse(data, statusCode = 200) {
  * @param {boolean} isPost - Whether this is a POST request
  */
 function handleApiRequest(params, isPost = false) {
-  // Validate API key
+  // Primary gate (Phase 2): only the Cloudflare Worker knows this secret,
+  // and it only sends it after Cloudflare Access has verified the caller's
+  // @pltheatrical.com identity. This is what makes it safe to be
+  // ANYONE_ANONYMOUS-reachable — a direct hit without the Worker in front
+  // has no way to produce this value.
+  if (!validateOrigin(params)) {
+    return jsonResponse({ error: 'Unauthorized: request did not come through the Access-gated proxy' }, 401);
+  }
+  // Secondary/legacy check — kept for defense in depth, not load-bearing.
   if (!validateApiKey(params)) {
     return jsonResponse({ error: 'Unauthorized: invalid or missing api_key' }, 401);
   }
@@ -122,16 +154,16 @@ function handleApiRequest(params, isPost = false) {
         return jsonResponse(apiGetProjectPendingEntries(params.projectId));
 
       // ---- WRITE operations (POST) ----
-      // syncApproved and updateMapping are intentionally NOT exposed here.
-      // The web API key is a single static bearer token shipped in public
-      // client JS (documented in CLAUDE.md) — fine for read actions, not
-      // safe for triggering real QBO writes or arbitrary mapping-cell
-      // writes. Both actions remain available from the bound Sheet's
-      // Toggl-QBO Sync menu, which is gated by real Google account auth.
+      // Restored in Phase 2: reachable only through the Access-gated
+      // Cloudflare Worker (see validateOrigin above). The 2026-07-13 410
+      // response was the emergency fix for the WEB_API_KEY-in-browser-JS
+      // flaw; this is the real fix, not a reversion of it.
       case 'syncApproved':
-        return jsonResponse({ error: 'syncApproved is no longer available via the web API. Run it from the Sheet: Toggl-QBO Sync > Sync Operations > Sync Approved Entries.' }, 410);
+        if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
+        return jsonResponse(apiSyncApproved());
       case 'updateMapping':
-        return jsonResponse({ error: 'updateMapping is no longer available via the web API. Edit the mapping cell directly in the Sheet.' }, 410);
+        if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
+        return jsonResponse(apiUpdateMapping(params));
       case 'previewApproved':
         return jsonResponse(apiPreviewApproved(params));
       case 'refreshTogglMappings':
@@ -355,6 +387,28 @@ function apiGetConfig() {
 // ============================================================================
 
 /**
+ * Triggers sync of approved entries
+ */
+function apiSyncApproved() {
+  let results;
+  try {
+    results = syncApprovedEntries({ fromWebApi: true });
+  } catch (e) {
+    // Catch any stray UI errors (SpreadsheetApp.getUi) that might occur
+    // during sync notifications - the sync itself may have succeeded
+    logMessage(`Sync completed with notification error: ${e.message}`, 'WARN');
+  }
+
+  return {
+    message: 'Sync completed',
+    synced: results?.synced || 0,
+    failed: results?.failed || 0,
+    lastSync: getConfigValue('LAST_SYNC_DATE', ''),
+    apiCalls: getConfigValue('LAST_SYNC_API_CALLS', '')
+  };
+}
+
+/**
  * Preview approved entries (returns data without syncing)
  */
 function apiPreviewApproved(params) {
@@ -456,6 +510,43 @@ function apiRefreshQBOMasterLists() {
 function apiWireDropdowns() {
   wireAllDropdowns();
   return { message: 'Dropdowns wired' };
+}
+
+/**
+ * Updates a single mapping cell
+ * Params: sheet (sheet name), row (row number), col (column name or number), value
+ */
+function apiUpdateMapping(params) {
+  const { sheet: sheetName, row, col, value } = params;
+
+  const validSheets = [
+    CONFIG.SHEETS.MAPPINGS_USERS,
+    CONFIG.SHEETS.MAPPINGS_CLIENTS,
+    CONFIG.SHEETS.MAPPINGS_PROJECTS,
+    CONFIG.SHEETS.MAPPINGS_TASKS
+  ];
+
+  if (!validSheets.includes(sheetName)) {
+    throw new Error(`Invalid sheet: ${sheetName}`);
+  }
+
+  const ss = getSpreadsheet();
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
+
+  const rowNum = parseInt(row);
+  let colNum = parseInt(col);
+
+  // If col is a string (header name), find the column number
+  if (isNaN(colNum)) {
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    colNum = headers.indexOf(col) + 1;
+    if (colNum === 0) throw new Error(`Column not found: ${col}`);
+  }
+
+  sheet.getRange(rowNum, colNum).setValue(value === 'true' ? true : value === 'false' ? false : value);
+
+  return { message: `Updated ${sheetName} row ${rowNum} col ${colNum}` };
 }
 
 /**

@@ -3,39 +3,17 @@
  */
 
 const API = {
-  /** Base URL for the deployed Google Apps Script web app */
-  baseUrl: '',
+  /**
+   * Fixed relative path — Phase 2 (Cloudflare Access migration). The
+   * Cloudflare Worker at /api/* holds the real credentials server-side
+   * and injects them; this page never has, requests, or stores a key.
+   * Auth is Cloudflare Access (email OTP), enforced before this page
+   * even loads.
+   */
+  baseUrl: '/api',
 
-  /** API key for authentication */
-  apiKey: '',
-
-  /** Initialize from localStorage */
-  init() {
-    this.baseUrl = localStorage.getItem('tqs_api_url') || '';
-    this.apiKey = localStorage.getItem('tqs_api_key') || '';
-  },
-
-  /** Check if configured */
-  isConfigured() {
-    return !!(this.baseUrl && this.apiKey);
-  },
-
-  /** Save configuration */
-  configure(url, key) {
-    // Remove trailing slash
-    this.baseUrl = url.replace(/\/+$/, '');
-    this.apiKey = key;
-    localStorage.setItem('tqs_api_url', this.baseUrl);
-    localStorage.setItem('tqs_api_key', this.apiKey);
-  },
-
-  /** Clear configuration */
-  disconnect() {
-    this.baseUrl = '';
-    this.apiKey = '';
-    localStorage.removeItem('tqs_api_url');
-    localStorage.removeItem('tqs_api_key');
-  },
+  /** No-op — kept so index.html's bootstrap call doesn't need to change. */
+  init() {},
 
   /**
    * Make a GET request to the API
@@ -43,9 +21,8 @@ const API = {
    * @param {Object} [params] - Additional query parameters
    */
   async get(action, params = {}) {
-    const url = new URL(this.baseUrl);
+    const url = new URL(this.baseUrl, window.location.origin);
     url.searchParams.set('action', action);
-    url.searchParams.set('api_key', this.apiKey);
     for (const [k, v] of Object.entries(params)) {
       url.searchParams.set(k, v);
     }
@@ -65,13 +42,10 @@ const API = {
    * @param {Object} [body] - Request body
    */
   async post(action, body = {}) {
-    // Use text/plain to avoid CORS preflight (OPTIONS request) which
-    // Google Apps Script web apps don't support. The GAS doPost handler
-    // parses the raw body as JSON regardless of Content-Type.
     const resp = await fetch(this.baseUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action, api_key: this.apiKey, ...body })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, ...body })
     });
     const data = await resp.json();
 

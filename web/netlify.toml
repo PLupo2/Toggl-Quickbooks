@@ -1,8 +1,0 @@
-[build]
-  publish = "."
-
-# SPA fallback — all routes serve index.html
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200

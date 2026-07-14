@@ -6,64 +6,12 @@ const App = {
   currentPage: 'dashboard',
 
   init() {
+    // No setup/connect flow — Cloudflare Access has already authenticated
+    // the caller before this page loads, and the API base is a fixed
+    // relative path handled by the Worker. See api.js.
     API.init();
-
-    if (!API.isConfigured()) {
-      this.showSetup();
-      return;
-    }
-
     this.showApp();
     this.navigate('dashboard');
-  },
-
-  // ===========================================================================
-  // Setup / Connection
-  // ===========================================================================
-
-  showSetup() {
-    document.getElementById('app').innerHTML = `
-      <div class="setup-screen">
-        <div class="setup-card">
-          <h1>Toggl-QBO Sync</h1>
-          <p>Connect to your Google Sheet to get started. You'll need the deployed
-             Web App URL and your API key.</p>
-          <input type="url" id="setup-url" placeholder="Google Apps Script Web App URL"
-                 value="${API.baseUrl}">
-          <input type="text" id="setup-key" placeholder="API Key (WEB_API_KEY from Script Properties)"
-                 value="${API.apiKey}">
-          <button class="btn btn-primary" style="width:100%;justify-content:center"
-                  onclick="App.connect()">Connect</button>
-          <p style="margin-top:16px;font-size:12px;color:var(--text-secondary)">
-            The API key is set in your Google Apps Script project under
-            Script Properties as <code>WEB_API_KEY</code>.
-          </p>
-        </div>
-      </div>`;
-  },
-
-  async connect() {
-    const url = document.getElementById('setup-url').value.trim();
-    const key = document.getElementById('setup-key').value.trim();
-
-    if (!url || !key) {
-      Toast.error('Please enter both the Web App URL and API key.');
-      return;
-    }
-
-    API.configure(url, key);
-
-    try {
-      // Test the connection
-      await API.get('getDashboard');
-      Toast.success('Connected successfully!');
-      this.showApp();
-      this.navigate('dashboard');
-    } catch (err) {
-      API.disconnect();
-      Toast.error('Connection failed: ' + err.message);
-      this.showSetup();
-    }
   },
 
   // ===========================================================================
@@ -125,12 +73,9 @@ const App = {
               </button>
             </div>
             <div style="display:flex;gap:8px">
-              <button class="btn btn-sm" style="flex:1;justify-content:center" onclick="Gate.lock()">
-                Lock
-              </button>
-              <button class="btn btn-sm" style="flex:1;justify-content:center" onclick="App.disconnectConfirm()">
-                Disconnect
-              </button>
+              <a class="btn btn-sm" style="flex:1;justify-content:center" href="/cdn-cgi/access/logout">
+                Sign out
+              </a>
             </div>
           </div>
         </aside>
@@ -147,13 +92,6 @@ const App = {
     // Sync theme toggle active state with current preference
     const saved = localStorage.getItem(ThemeManager.STORAGE_KEY) || 'system';
     ThemeManager.apply(saved);
-  },
-
-  disconnectConfirm() {
-    if (confirm('Disconnect from the Google Sheet? You can reconnect later.')) {
-      API.disconnect();
-      this.showSetup();
-    }
   },
 
   // ===========================================================================
@@ -1182,5 +1120,5 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () 
 ThemeManager.init();
 
 // ===========================================================================
-// Init — controlled by gate.js (password gate calls App.init() after auth)
+// Init — triggered by the inline DOMContentLoaded listener in index.html
 // ===========================================================================
