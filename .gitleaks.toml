@@ -1,0 +1,18 @@
+# PLT house gitleaks config — tracked in every repo (git protocol 2026-07-31)
+[extend]
+useDefault = true
+
+[[rules]]
+id = "plt-mm-key"
+description = "PLT Mac Mini RemoteAdmin key"
+regex = '''mm_[0-9a-f]{64}'''
+
+[[rules]]
+id = "plt-cs-key"
+description = "PLT Beelink RemoteAdmin key"
+regex = '''cs_[0-9a-f]{32}'''
+
+[[rules]]
+id = "plt-gateway-token"
+description = "PLT Google Suite Gateway token (64-hex in token context)"
+regex = '''(?i)(token|key|secret)["'\s:=]+[0-9a-f]{64}'''
