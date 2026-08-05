@@ -77,7 +77,7 @@ git add -A && git commit -m "description" && git push
 
 **History:** `WEB_API_KEY` used to be a static bearer token embedded directly in `web/js/gate.js`, a public file in a public repo, shipped to any browser that loaded the site — a UX gate, never a real security boundary. On 2026-07-13 this was caught (client JS could trigger real QBO writes) and emergency-patched: `syncApproved`/`updateMapping` returned HTTP 410, forced to the Sheet menu only (commit `2626c24`). That patch broke the dashboard's core workflow by design — it was never meant to be the end state. See spec doc Phase 2 + erratum for the full design record.
 
-**Current (Phase 2) design — code-complete, not yet deployed:**
+**Current (Phase 2) design — deployed and live:**
 
 ```
 Browser → Cloudflare Access (@pltheatrical.com email OTP, gates the whole zone)
@@ -91,7 +91,7 @@ Browser → Cloudflare Access (@pltheatrical.com email OTP, gates the whole zone
 - `validateOrigin` is checked **before** `validateApiKey` and fails closed if `WORKER_SECRET` is unset — this is what makes it safe for the Apps Script deployment to stay `ANYONE_ANONYMOUS`: a direct hit that skips the Worker (and therefore skips Access) has no way to produce `origin_secret`.
 - `syncApproved` and `updateMapping` are restored to full function — reaching them now requires passing through Access + the Worker, not just knowing a static string.
 
-**Deployment status (2026-07-14):** WebAPI.gs, the Worker, and the frontend changes are written and staged locally (not yet `clasp push`ed / not yet deployed / not yet pushed to GitHub). Blocked on Cloudflare infrastructure: `~/secrets/cloudflare_api_token.txt` has DNS-edit scope only — Access Apps and Workers Scripts API calls both return `Authentication error`. DNS record for `timesync.pltheatrical.com` is still unproxied (`proxied: false`). See `worker/README.md` for manual deploy steps and the project's clasp-push checklist for full cutover sequencing.
+**Deployment status (2026-08-05):** Fully deployed and live. DNS is proxied, Cloudflare Access gates the zone (confirmed via live 302 to `pltheatrical.cloudflareaccess.com` on both `/` and `/api/*`), the Worker is deployed with `WORKER_SECRET`/`api_key` env vars, `WebAPI.gs` (with `validateOrigin`) is pushed, `WORKER_SECRET` Script Property is set, and `web/js/gate.js` has been deleted from the frontend. Post-cutover commits (`b659b43` onward: async sync, worker retry resilience, dashboard perf) confirm the system has been stable in production since.
 
 **Cutover ordering matters:** deploying the new WebAPI.gs alone (before the Worker/Access/frontend are live) breaks the current dashboard completely — `validateOrigin` fails closed with no Worker to supply the secret. DNS proxy flip, Access app, Worker deploy + secrets, `WORKER_SECRET` Script Property, `clasp push`, and the frontend `git push` must land together in one sitting, not incrementally.
 
@@ -131,8 +131,7 @@ TimeSync is actively used in production. Until Phase 1.5.4 (cutover validation) 
 - The "no dedicated spec doc" line that used to be here was itself stale (dated to the 2026-03-25 batch update, never corrected when this doc was created). The global project index row (`~/Projects/stage-manager/GLOBAL_CLAUDE.md`) needs the same correction — Stage Manager's registry `spec_doc_id` was committed (`f30997f`) but is inert until the daemon restarts, so the index table may still show `—` until then.
 
 ## KNOWN ISSUES
-- Phase 2 (Cloudflare Access migration) is code-complete but not deployed — see WEB API KEY / AUTH section above.
+- None open.
 
-## CURRENT STATE
-- Status: Active (Apps Script project). Phase 2 (Cloudflare Access migration) in progress — see WEB API KEY / AUTH.
+- Status: Active (Apps Script project). Phase 2 (Cloudflare Access migration) deployed and live — see WEB API KEY / AUTH.
 - QuickBooks/Toggl time sync via Google Apps Script
