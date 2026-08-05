@@ -4,6 +4,7 @@
 
 const App = {
   currentPage: 'dashboard',
+  renderToken: 0,
 
   init() {
     // No setup/connect flow — Cloudflare Access has already authenticated
@@ -100,6 +101,11 @@ const App = {
 
   navigate(page) {
     this.currentPage = page;
+    // Bump the render token so any in-flight page load from the page we are
+    // leaving knows it is stale and must not write to #content. Without this,
+    // a slow Dashboard fetch lands after the user has already switched to
+    // Sync Entries and silently replaces it.
+    this.renderToken = (this.renderToken || 0) + 1;
 
     // Update active nav item
     document.querySelectorAll('.nav-item').forEach(el => {
@@ -136,10 +142,29 @@ const App = {
 // ===========================================================================
 
 const Pages = {
+  /**
+   * Guarded write to #content. Returns false if the render is stale --
+   * i.e. the user navigated to a different page while this page's data
+   * was still loading. Without this a slow Dashboard fetch lands after
+   * the user has switched to Sync Entries and silently replaces it.
+   */
+  _write(token, html) {
+    if (App.renderToken !== token) return false;
+    const el = document.getElementById('content');
+    if (!el) return false;
+    el.innerHTML = html;
+    return true;
+  },
+
+  _stale(token) {
+    return App.renderToken !== token;
+  },
+
   // ---------------------------------------------------------------------------
   // Dashboard — Status only (no sync actions)
   // ---------------------------------------------------------------------------
   async dashboard() {
+    const _rt = App.renderToken;
     const content = document.getElementById('content');
     content.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div> Loading dashboard...</div>';
 
@@ -178,6 +203,7 @@ const Pages = {
         ? '<span class="badge badge-warning">Paused</span>'
         : '';
 
+      if (Pages._stale(_rt)) return;
       content.innerHTML = `
         <div class="card">
           <div class="card-title">Connection Status</div>
@@ -228,6 +254,7 @@ const Pages = {
           <div class="stats-grid">${mappingCards}</div>
         </div>`;
     } catch (err) {
+      if (Pages._stale(_rt)) return;
       content.innerHTML = `<div class="card"><p style="color:var(--danger)">Failed to load dashboard: ${err.message}</p>
         <button class="btn" onclick="Pages.dashboard()">Retry</button></div>`;
     }
@@ -240,6 +267,7 @@ const Pages = {
   _syncPreview: null,
 
   async sync() {
+    const _rt = App.renderToken;
     const content = document.getElementById('content');
     content.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div> Loading...</div>';
 
@@ -252,8 +280,10 @@ const Pages = {
       const preview = await API.get('previewApproved');
       Pages._syncPreview = preview;
 
+      if (Pages._stale(_rt)) return;
       Pages._renderSyncPage(config, preview);
     } catch (err) {
+      if (Pages._stale(_rt)) return;
       content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${err.message}</p>
         <button class="btn" onclick="Pages.sync()">Retry</button></div>`;
     }
@@ -410,6 +440,7 @@ const Pages = {
   _logExpanded: {},
 
   async log() {
+    const _rt = App.renderToken;
     const content = document.getElementById('content');
     content.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div> Loading sync log...</div>';
 
@@ -417,6 +448,7 @@ const Pages = {
       const data = await API.get('getSyncLog', { limit: '200' });
 
       if (data.entries.length === 0) {
+        if (Pages._stale(_rt)) return;
         content.innerHTML = '<div class="card"><p>No sync log entries yet.</p></div>';
         return;
       }
@@ -479,12 +511,14 @@ const Pages = {
           </div>`;
       }).join('');
 
+      if (Pages._stale(_rt)) return;
       content.innerHTML = `
         <div class="card">
           <div class="card-title">${data.total} Total Entries in ${groupKeys.length} Sync Jobs</div>
           ${groupsHtml}
         </div>`;
     } catch (err) {
+      if (Pages._stale(_rt)) return;
       content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${err.message}</p></div>`;
     }
   },
@@ -519,6 +553,7 @@ const Pages = {
   _projectPendingCache: {},
 
   async mappings() {
+    const _rt = App.renderToken;
     const content = document.getElementById('content');
     const tabs = [
       { key: 'Mappings_Users', label: 'Users', qboType: 'employees', qboIdCol: 'QBO Employee ID', qboNameCol: 'QBO Employee Name' },
@@ -747,6 +782,7 @@ const Pages = {
   // Refresh Data
   // ---------------------------------------------------------------------------
   async refresh() {
+    const _rt = App.renderToken;
     const content = document.getElementById('content');
     content.innerHTML = `
       <div class="stats-grid">
@@ -805,6 +841,7 @@ const Pages = {
   // Settings — Full configuration options
   // ---------------------------------------------------------------------------
   async settings() {
+    const _rt = App.renderToken;
     const content = document.getElementById('content');
     content.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div> Loading settings...</div>';
 

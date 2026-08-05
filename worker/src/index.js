@@ -74,8 +74,34 @@ export default {
       init.body = JSON.stringify(merged);
     }
 
-    const upstream = await fetch(upstreamUrl, init);
-    const text = await upstream.text();
+    let upstream;
+    let text;
+    try {
+      upstream = await fetch(upstreamUrl, init);
+      text = await upstream.text();
+    } catch (err) {
+      // Network-level failure talking to Apps Script (timeout, DNS, reset).
+      // Without this the runtime returns a Cloudflare HTML error page and the
+      // dashboard reports an opaque "Unexpected token '<'".
+      return jsonError(
+        `Upstream request failed (${merged.action}): ${err && err.message ? err.message : String(err)}`,
+        502
+      );
+    }
+
+    // Apps Script returns HTML for sign-in walls, quota pages, and some
+    // redirect states. Relaying that verbatim breaks JSON.parse in the
+    // browser with no clue as to the cause. Detect and describe it instead.
+    const looksJson = text.trim().startsWith('{') || text.trim().startsWith('[');
+    if (!looksJson) {
+      const snippet = text.replace(/\s+/g, ' ').slice(0, 200);
+      return jsonError(
+        `Upstream returned non-JSON (HTTP ${upstream.status}) for action "${merged.action}". ` +
+          `This usually means Apps Script answered with an HTML page rather than data. ` +
+          `First 200 chars: ${snippet}`,
+        502
+      );
+    }
 
     return new Response(text, {
       status: upstream.status,
