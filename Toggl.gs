@@ -2059,6 +2059,22 @@ function resumePendingSync() {
 
     if (result.completed) {
       clearSyncState();
+
+      // D5: only touch job-meta if this pause was a tracked web job (a
+      // Sheet-menu-initiated pause has no corresponding SYNC_JOB_META) —
+      // this may be resuming across one or several prior pause cycles.
+      const meta = getSyncJobMeta();
+      if (meta && meta.status === 'paused') {
+        saveSyncJobMeta({
+          ...meta,
+          status: 'completed',
+          completedAt: formatDateTime(new Date()),
+          totalSynced: result.totalSynced,
+          totalFailed: result.totalFailed,
+          totalAlreadySynced: result.totalAlreadySynced
+        });
+      }
+
       showAlert(
         `Sync resumed and completed!\n\n` +
         `Total synced: ${result.totalSynced}\n` +
@@ -2070,6 +2086,12 @@ function resumePendingSync() {
     // If not completed, syncApprovedEntriesWithState will have saved state and scheduled another resume
   } catch (error) {
     logMessage(`Error resuming sync: ${error.message}`, 'ERROR');
+
+    const meta = getSyncJobMeta();
+    if (meta && meta.status === 'paused') {
+      saveSyncJobMeta({ ...meta, status: 'failed', completedAt: formatDateTime(new Date()), error: error.message });
+    }
+
     showAlert(`Error resuming sync: ${error.message}`, 'Resume Error');
   }
 }
@@ -2091,8 +2113,166 @@ function cancelPendingSync() {
     }
   });
 
+  // D5: only touch job-meta if this pause was a tracked web job (a
+  // Sheet-menu-initiated pause has no corresponding SYNC_JOB_META).
+  const meta = getSyncJobMeta();
+  if (meta && meta.status === 'paused') {
+    saveSyncJobMeta({ ...meta, status: 'failed', completedAt: formatDateTime(new Date()), error: 'Cancelled by operator' });
+  }
+
   clearSyncState();
   showToast('Pending sync cancelled.');
+}
+
+// ============================================================================
+// ASYNC SYNC (D5, spec doc "IDEMPOTENCY GUARD + ASYNC SYNC" section)
+// ============================================================================
+//
+// Cloudflare abandons the edge request at ~100s while Apps Script keeps
+// running, so a long syncApproved call presents to the browser as a failed
+// (524) request even when the run actually succeeded -- the direct cause
+// of every duplication episode in this system's history. The fix: the web
+// path no longer runs the sync inline. It starts a job (a one-off trigger,
+// firing almost immediately, detached from the HTTP request) and returns a
+// jobId right away; the frontend polls for status.
+//
+// This builds on the EXISTING pause/resume machinery (saveSyncState /
+// loadSyncState / scheduleResume / resumePendingSync, all unmodified in
+// their own core logic below) -- syncApprovedEntries still owns
+// budget-exhaustion pausing exactly as Delivery 1 built it. SYNC_JOB_META
+// is a separate, parallel property that only tracks the higher-level "is a
+// web-initiated job running, paused, completed, or failed" question across
+// that whole lifecycle, so polling has something authoritative to read
+// regardless of how many pause/resume cycles the underlying run goes
+// through. It intentionally does not replace or restructure
+// SYNC_PENDING_STATE.
+
+/**
+ * @returns {Object|null} Current job metadata, or null if none exists.
+ */
+function getSyncJobMeta() {
+  const json = getScriptProperty('SYNC_JOB_META');
+  if (!json) return null;
+  try {
+    return JSON.parse(json);
+  } catch (e) {
+    logMessage(`Error parsing sync job meta: ${e.message}`, 'WARN');
+    return null;
+  }
+}
+
+function saveSyncJobMeta(meta) {
+  setScriptProperty('SYNC_JOB_META', JSON.stringify(meta));
+}
+
+/**
+ * D5: entry point for the web path. Starts a job and returns immediately —
+ * the actual sync work happens in runScheduledSyncJob, fired by a one-off
+ * trigger, detached from this call's HTTP request/response.
+ *
+ * D1+D5 interaction: if a job is already running or paused, a retry (e.g.
+ * from a browser that gave up on the original request after ~100s) is
+ * handed the SAME jobId rather than starting a duplicate — harmless by
+ * construction, since Sync_Log is the guard regardless of how many times
+ * this is called.
+ *
+ * @param {Object} options - May include forceEntryIds (D4), carried
+ *   through to the triggered run. Deliberately NOT threaded through a
+ *   pause/resume cycle — see syncApprovedEntriesWithState's own note on
+ *   why overrides don't persist across a paused multi-hour operation.
+ * @returns {{jobId: string, status: string, alreadyRunning: boolean}}
+ */
+function startAsyncSyncJob(options = {}) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) {
+    throw new Error('Could not acquire the sync lock (another request is starting a job right now) — try again in a moment.');
+  }
+
+  try {
+    const existing = getSyncJobMeta();
+    if (existing && (existing.status === 'running' || existing.status === 'paused')) {
+      logMessage(`Job ${existing.jobId} already ${existing.status} — handing back the existing job instead of starting a new one`, 'INFO');
+      return { jobId: existing.jobId, status: existing.status, alreadyRunning: true };
+    }
+
+    const jobId = Utilities.getUuid();
+    const meta = {
+      jobId,
+      status: 'running',
+      startedAt: formatDateTime(new Date()),
+      completedAt: null,
+      totalSynced: 0,
+      totalFailed: 0,
+      totalAlreadySynced: 0,
+      error: null,
+      // Script Properties are strings — a plain array survives the JSON round-trip fine.
+      forceEntryIds: Array.from(parseForceEntryIds(options.forceEntryIds))
+    };
+    saveSyncJobMeta(meta);
+
+    // Fire almost immediately, but as a genuinely separate execution — this
+    // is what gets the actual sync work out from behind Cloudflare's edge
+    // timeout.
+    ScriptApp.newTrigger('runScheduledSyncJob').timeBased().after(1000).create();
+
+    logMessage(`Started async sync job ${jobId}`, 'INFO');
+    return { jobId, status: 'running', alreadyRunning: false };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Trigger handler for the initial async kick-off (D5). Runs detached from
+ * any HTTP request — Apps Script trigger executions aren't subject to
+ * Cloudflare's edge timeout since there's no HTTP response waiting on them.
+ * Delegates to the unmodified syncApprovedEntries; all budget-pause/resume
+ * behavior is exactly what Delivery 1 already built. This function's only
+ * job is to translate that into SYNC_JOB_META so polling has something to
+ * read.
+ */
+function runScheduledSyncJob() {
+  // Self-cleanup: this is a one-off trigger, remove it so it can't fire twice.
+  ScriptApp.getProjectTriggers().forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'runScheduledSyncJob') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+
+  const meta = getSyncJobMeta();
+  if (!meta) {
+    logMessage('runScheduledSyncJob fired with no job metadata — nothing to do', 'WARN');
+    return;
+  }
+
+  try {
+    const result = syncApprovedEntries({ fromWebApi: true, forceEntryIds: meta.forceEntryIds });
+
+    if (hasPendingSync()) {
+      // Budget-exhausted mid-run: syncApprovedEntries already called
+      // saveSyncState + scheduleResume itself (unmodified Delivery 1
+      // behavior). Record that this job is now paused; resumePendingSync
+      // carries the job-meta update forward to completion from here.
+      saveSyncJobMeta({
+        ...meta, status: 'paused',
+        totalSynced: result.synced, totalFailed: result.failed, totalAlreadySynced: result.alreadySynced
+      });
+      logMessage(`Async sync job ${meta.jobId} paused (rate limit) — will resume automatically`, 'INFO');
+    } else {
+      saveSyncJobMeta({
+        ...meta,
+        status: 'completed',
+        completedAt: formatDateTime(new Date()),
+        totalSynced: result.synced,
+        totalFailed: result.failed,
+        totalAlreadySynced: result.alreadySynced
+      });
+      logMessage(`Async sync job ${meta.jobId} completed: ${result.synced} synced, ${result.failed} failed, ${result.alreadySynced} already synced`, 'INFO');
+    }
+  } catch (error) {
+    logMessage(`Async sync job ${meta.jobId} failed: ${error.message}`, 'ERROR');
+    saveSyncJobMeta({ ...meta, status: 'failed', completedAt: formatDateTime(new Date()), error: error.message });
+  }
 }
 
 /**

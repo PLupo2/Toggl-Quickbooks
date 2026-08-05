@@ -280,8 +280,18 @@ const Pages = {
       const preview = await API.get('previewApproved');
       Pages._syncPreview = preview;
 
+      // D5: if a job is already active (e.g. the operator navigated away
+      // mid-sync and came back), resume showing/polling it instead of the
+      // normal idle state. Reads persisted server state, not anything held
+      // in this tab — a page reload picks the same job back up.
+      const jobStatus = await API.get('getSyncJobStatus');
+
       if (Pages._stale(_rt)) return;
-      Pages._renderSyncPage(config, preview);
+      Pages._renderSyncPage(config, preview, jobStatus);
+
+      if (jobStatus.status === 'running' || jobStatus.status === 'paused') {
+        Pages._pollSyncJob(jobStatus.jobId); // not awaited — runs in the background
+      }
     } catch (err) {
       if (Pages._stale(_rt)) return;
       content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${err.message}</p>
@@ -289,7 +299,7 @@ const Pages = {
     }
   },
 
-  _renderSyncPage(config, preview) {
+  _renderSyncPage(config, preview, jobStatus) {
     const content = document.getElementById('content');
 
     // Build preview table
@@ -323,11 +333,24 @@ const Pages = {
         </div>`;
     }
 
+    // D5: sync now runs as a background job (Cloudflare abandons long-running
+    // requests around ~100s, which used to present a successful sync as a
+    // failed one). This banner reflects persisted server state, so it's
+    // accurate even right after a page reload mid-sync.
+    const jobActive = jobStatus && (jobStatus.status === 'running' || jobStatus.status === 'paused');
+    const syncJobBanner = jobActive ? `
+      <div class="info-box" id="sync-job-banner" style="border-color:var(--success)">
+        <div class="spinner" style="display:inline-block;vertical-align:middle;margin-right:8px"></div>
+        <span id="sync-job-banner-text">Sync in progress...</span>
+      </div>` : '';
+
     content.innerHTML = `
       <div class="info-box">
         <strong>How it works:</strong> Select a date range and click Preview to see entries tagged "${preview.approvedTag}" in Toggl.
         Review them, then click Sync to create time entries in QuickBooks and tag them as "${preview.syncedTag}" in Toggl.
       </div>
+
+      ${syncJobBanner}
 
       <div class="card">
         <div class="card-title">Step 1: Select Date Range</div>
@@ -350,8 +373,8 @@ const Pages = {
         <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
           <span>Step 2: Review & Sync ${preview.count > 0 ? `(${preview.count} entries)` : ''}</span>
           ${preview.count > 0 ? `
-            <button class="btn btn-success" id="sync-btn" onclick="Pages.runSync()">
-              Sync ${preview.count} Entries to QuickBooks
+            <button class="btn btn-success" id="sync-btn" ${jobActive ? 'disabled' : ''} onclick="Pages.runSync()">
+              ${jobActive ? '<div class="spinner"></div> Syncing...' : `Sync ${preview.count} Entries to QuickBooks`}
             </button>
           ` : ''}
         </div>
@@ -415,22 +438,80 @@ const Pages = {
     // /api traffic is proxied by a Worker that injects the credentials
     // server-side, so no secret is exposed to the browser. Apps Script
     // independently validates origin_secret before executing any write.
+    //
+    // D5: syncApproved now starts a job and returns immediately instead of
+    // running the sync inline — Cloudflare abandons requests around ~100s,
+    // which used to present a successful long sync as a failed one to the
+    // browser. This just starts the job; _pollSyncJob drives the UI from here.
     const btn = document.getElementById('sync-btn');
     if (btn) {
       btn.disabled = true;
-      btn.innerHTML = '<div class="spinner"></div> Syncing...';
+      btn.innerHTML = '<div class="spinner"></div> Starting sync...';
     }
 
     try {
-      const result = await API.post('syncApproved');
-      Toast.success(result.message || 'Sync completed!');
-      Pages.sync(); // Reload preview
+      const start = await API.post('syncApproved');
+      if (start.alreadyRunning) {
+        Toast.success('A sync was already in progress — resuming status.');
+      }
+      Pages._pollSyncJob(start.jobId); // not awaited — updates the DOM as it goes
     } catch (err) {
-      Toast.error('Sync failed: ' + err.message);
+      Toast.error('Sync failed to start: ' + err.message);
       if (btn) {
         btn.disabled = false;
         btn.textContent = 'Sync Now';
       }
+    }
+  },
+
+  /**
+   * Polls getSyncJobStatus until the job reaches a terminal state (D5).
+   * Reused by runSync() (right after starting) and sync() (on page load,
+   * if a job is already active). Reads persisted server state only — holds
+   * nothing of its own beyond the renderToken staleness check, so a page
+   * reload mid-sync picks the same job back up via sync() rather than
+   * losing track of it.
+   */
+  async _pollSyncJob(jobId) {
+    const _rt = App.renderToken;
+    const POLL_INTERVAL_MS = 3000;
+
+    while (true) {
+      if (Pages._stale(_rt)) return; // user navigated away — stop polling
+
+      let status;
+      try {
+        status = await API.get('getSyncJobStatus');
+      } catch (err) {
+        Toast.error('Lost track of sync status: ' + err.message);
+        return;
+      }
+
+      if (Pages._stale(_rt)) return;
+      if (status.jobId !== jobId) return; // a different job took over — not our concern
+
+      if (status.status === 'completed') {
+        Toast.success(`Sync completed: ${status.synced} synced, ${status.failed} failed, ${status.alreadySynced} already synced`);
+        Pages.sync(); // Reload preview, clears the in-progress banner
+        return;
+      }
+
+      if (status.status === 'failed') {
+        Toast.error('Sync failed: ' + (status.error || 'Unknown error'));
+        Pages.sync();
+        return;
+      }
+
+      const progress = status.pending
+        ? `${status.synced} synced, ${status.pending.pendingEntries} pending — paused for rate limit, resumes automatically`
+        : `${status.synced} synced so far...`;
+
+      const bannerText = document.getElementById('sync-job-banner-text');
+      const btn = document.getElementById('sync-btn');
+      if (bannerText) bannerText.textContent = progress;
+      if (btn) btn.innerHTML = `<div class="spinner"></div> ${progress}`;
+
+      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
     }
   },
 

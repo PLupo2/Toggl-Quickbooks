@@ -140,6 +140,8 @@ function handleApiRequest(params, isPost = false) {
         return jsonResponse(apiGetDashboard());
       case 'getSyncStatus':
         return jsonResponse(apiGetSyncStatus());
+      case 'getSyncJobStatus':
+        return jsonResponse(apiGetSyncJobStatus());
       case 'getMappings':
         return jsonResponse(apiGetMappings(params.sheet));
       case 'getSyncLog':
@@ -159,6 +161,9 @@ function handleApiRequest(params, isPost = false) {
       // response was the emergency fix for the WEB_API_KEY-in-browser-JS
       // flaw; this is the real fix, not a reversion of it.
       case 'syncApproved':
+        // D5: starts a job and returns immediately — see startAsyncSyncJob
+        // in Toggl.gs. Does not run the sync inline anymore; poll
+        // getSyncJobStatus for progress/completion.
         if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
         return jsonResponse(apiSyncApproved(params));
       case 'updateMapping':
@@ -402,7 +407,10 @@ function apiGetConfig() {
 // ============================================================================
 
 /**
- * Triggers sync of approved entries
+ * Starts an async sync job and returns immediately (D5). Does not run the
+ * sync inline — Cloudflare abandons the edge request at ~100s while Apps
+ * Script keeps going, which used to present a successful long run to the
+ * browser as a failed one. Poll getSyncJobStatus for progress/completion.
  * @param {Object} params - May include forceEntryIds (D4 per-entry override):
  *   an array (JSON POST body) or comma-separated string of Toggl Entry IDs
  *   to force-write even if Sync_Log already shows Status='Success' for them.
@@ -410,22 +418,46 @@ function apiGetConfig() {
  */
 function apiSyncApproved(params) {
   params = params || {};
-  let results;
-  try {
-    results = syncApprovedEntries({ fromWebApi: true, forceEntryIds: params.forceEntryIds });
-  } catch (e) {
-    // Catch any stray UI errors (SpreadsheetApp.getUi) that might occur
-    // during sync notifications - the sync itself may have succeeded
-    logMessage(`Sync completed with notification error: ${e.message}`, 'WARN');
-  }
+  const job = startAsyncSyncJob({ forceEntryIds: params.forceEntryIds });
 
   return {
-    message: 'Sync completed',
-    synced: results?.synced || 0,
-    failed: results?.failed || 0,
-    alreadySynced: results?.alreadySynced || 0,
-    lastSync: getConfigValue('LAST_SYNC_DATE', ''),
-    apiCalls: getConfigValue('LAST_SYNC_API_CALLS', '')
+    message: job.alreadyRunning
+      ? 'A sync is already in progress — polling the existing job.'
+      : 'Sync started',
+    jobId: job.jobId,
+    status: job.status,
+    alreadyRunning: job.alreadyRunning
+  };
+}
+
+/**
+ * D5: status polling endpoint. Reads persisted state only (SYNC_JOB_META,
+ * plus SYNC_PENDING_STATE for in-flight detail while paused) — never
+ * browser state, so progress survives the operator navigating away and a
+ * page reload can resume polling an already-running job.
+ * @returns {{status: string, jobId: string|null, ...}}
+ */
+function apiGetSyncJobStatus() {
+  const meta = getSyncJobMeta();
+  if (!meta) {
+    return { status: 'idle', jobId: null };
+  }
+
+  const pendingDetail = meta.status === 'paused' ? loadSyncState() : null;
+
+  return {
+    jobId: meta.jobId,
+    status: meta.status, // running | paused | completed | failed
+    startedAt: meta.startedAt,
+    completedAt: meta.completedAt || null,
+    synced: meta.totalSynced || 0,
+    failed: meta.totalFailed || 0,
+    alreadySynced: meta.totalAlreadySynced || 0,
+    error: meta.error || null,
+    pending: pendingDetail ? {
+      pendingEntries: pendingDetail.pendingEntryIds?.length || 0,
+      pausedAt: pendingDetail.pausedAt || null
+    } : null
   };
 }
 
