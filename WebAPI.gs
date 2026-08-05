@@ -180,6 +180,9 @@ function handleApiRequest(params, isPost = false) {
       case 'wireDropdowns':
         if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
         return jsonResponse(apiWireDropdowns());
+      case 'recomputeDisagreement':
+        if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
+        return jsonResponse(apiRecomputeDisagreement());
       case 'setConfig':
         if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
         return jsonResponse(apiSetConfig(params.key, params.value));
@@ -237,9 +240,35 @@ function apiGetDashboard() {
   // API usage from last sync
   const lastSyncCalls = getConfigValue('LAST_SYNC_API_CALLS', '');
 
-  // D1(b): Sync_Log vs Toggl Synced-tag divergence. Costs a Toggl fetch,
-  // so it's budget-guarded and never throws — see getTagLogDisagreementCount.
-  const disagreement = getTagLogDisagreementCount();
+  // D1(b) + dashboard-speed fix: this used to call getTagLogDisagreementCount()
+  // here, live, on every page load — measured 2026-08-05 at 8-10s for
+  // getDashboard vs 1-6s elsewhere, ~4 Toggl round trips and ~4 of a 220
+  // budget spent before the page could even render. It's now computed once
+  // per sync run (syncApprovedEntries / syncApprovedEntriesWithState, which
+  // already have the entries/tags in hand) and persisted; this just reads
+  // that snapshot. Zero Toggl calls. A snapshot that's never been computed
+  // (fresh install, or no sync yet since this shipped) is reported as
+  // skipped, not faked as zero — see loadDisagreementSnapshot's contract.
+  const snapshot = loadDisagreementSnapshot();
+  const disagreement = snapshot
+    ? {
+        count: snapshot.count,
+        missingTag: snapshot.missingTag,
+        missingLog: snapshot.missingLog,
+        checked: snapshot.checked,
+        skipped: false,
+        reason: null,
+        computedAt: snapshot.computedAt
+      }
+    : {
+        count: 0,
+        missingTag: 0,
+        missingLog: 0,
+        checked: 0,
+        skipped: true,
+        reason: 'Not yet computed — run a sync, or use the Recompute action',
+        computedAt: null
+      };
 
   return {
     sync: {
@@ -264,12 +293,29 @@ function apiGetDashboard() {
         checked: disagreement.checked,
         skipped: disagreement.skipped,
         reason: disagreement.reason,
+        computedAt: disagreement.computedAt,   // never trust count without checking this is non-null
         warning: !disagreement.skipped && disagreement.count > 0
           ? `${disagreement.count} entries disagree between Sync_Log and the Toggl "${getSyncedTagName()}" tag — see missingTag/missingLog.`
           : null
       }
     }
   };
+}
+
+/**
+ * On-demand recompute (D1(b) UI button) — the only remaining path that
+ * fetches live from Toggl on request rather than reading the sync-run
+ * snapshot. Same budget guard and skipped/reason shape as before; also
+ * persists the result so the next getDashboard read reflects it.
+ */
+function apiRecomputeDisagreement() {
+  const result = getTagLogDisagreementCount();
+  if (result.skipped) {
+    // Budget-guarded or errored — nothing to persist, report as-is so the
+    // UI can show why (e.g. "API budget too low"), not a stale success.
+    return { ...result, computedAt: null };
+  }
+  return saveDisagreementSnapshot(result);
 }
 
 /**

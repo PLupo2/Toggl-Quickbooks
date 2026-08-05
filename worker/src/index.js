@@ -94,14 +94,24 @@ export default {
 
     // Apps Script's /exec redirects to a temporary googleusercontent.com
     // URL to actually serve the response; that target intermittently 404s
-    // with a Google Docs HTML page instead of data. Measured 2026-08-05:
-    // 20 identical getSyncJobStatus requests fired directly at Apps Script
-    // (bypassing this Worker) returned 18 JSON, 2 HTTP 404 + HTML — a ~10%
-    // failure rate originating at Google, not Cloudflare or this Worker.
-    // Action-agnostic (also seen on getConfig, previewApproved).
+    // with a Google Docs HTML page instead of data.
     //
-    // Retry a bounded number of times for exactly that shape — non-JSON
-    // body on a 404 or 5xx — and nothing wider:
+    // CORRECTED 2026-08-05 (the original measurement here was wrong): this
+    // is not a per-request coin flip. It's a sustained dead window — one
+    // observed failure persisted 133s, with each individual failing
+    // request hanging 46-59s before even returning. At the original 3
+    // attempts / 250ms+750ms backoff, all 3 could land inside the same
+    // window and total ~150s+ — turning a fast failure into a Cloudflare
+    // edge timeout (~100s) that wouldn't otherwise have happened. Retrying
+    // more can make the failure worse, not better.
+    //
+    // So: at most ONE extra attempt, not two. Even that isn't free — two
+    // requests at 46-59s each can still approach or exceed the ~100s edge
+    // ceiling — but it's the bounded bet the spec calls for, not a
+    // guarantee this can't still time out during a long dead window.
+    //
+    // Retry only for exactly this shape — non-JSON body on a 404 or 5xx —
+    // and nothing wider:
     //   - A 200 with valid JSON is a real answer, including an app-level
     //     JSON error from WebAPI.gs — never retried.
     //   - Any other 4xx (400/401/403/...) is a real auth or request fault;
@@ -110,16 +120,15 @@ export default {
     // is nothing to duplicate. (Not the reason this is scoped so narrowly,
     // just why it's safe to be this direct about retrying rather than
     // needing a broader idempotency argument.)
-    const MAX_ATTEMPTS = 3;
-    const RETRY_DELAYS_MS = [250, 750]; // before attempt 2, then before attempt 3
+    const MAX_ATTEMPTS = 2; // 1 extra attempt, at most
+    const RETRY_DELAY_MS = 250; // before the one retry
 
     let looksJson = text.trim().startsWith('{') || text.trim().startsWith('[');
     let attempt = 1;
 
     while (!looksJson && (upstream.status === 404 || upstream.status >= 500) && attempt < MAX_ATTEMPTS) {
-      const delayMs = RETRY_DELAYS_MS[attempt - 1];
-      console.log(`[retry] ${merged.action}: attempt ${attempt} got HTTP ${upstream.status} non-JSON (likely a stale googleusercontent.com redirect target) — retrying in ${delayMs}ms`);
-      await new Promise(resolve => setTimeout(resolve, delayMs));
+      console.log(`[retry] ${merged.action}: attempt ${attempt} got HTTP ${upstream.status} non-JSON (likely a stale googleusercontent.com redirect target) — retrying in ${RETRY_DELAY_MS}ms`);
+      await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
       attempt++;
 
       try {

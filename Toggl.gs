@@ -1576,6 +1576,16 @@ function syncApprovedEntries(options = {}) {
   setConfigValue('LAST_SYNC_API_CALLS', stats.workspaceCalls);
   setConfigValue('LAST_SYNC_DATE', formatDateTime(new Date()));
 
+  // Dashboard speed: compute the disagreement snapshot here, from data this
+  // run already fetched (allEntries/tagLookup/alreadySyncedMap), instead of
+  // getDashboard paying for a fresh Toggl fetch on every page load. Wrapped
+  // defensively — a bug here must never take down a completed sync.
+  try {
+    saveDisagreementSnapshot(computeDisagreementFromEntries(allEntries, tagLookup, alreadySyncedMap, syncedTag));
+  } catch (e) {
+    logMessage(`Disagreement snapshot failed (non-fatal): ${e.message}`, 'WARN');
+  }
+
   const message = `Sync complete: ${results.synced} synced, ${results.failed} failed, ` +
     `${results.alreadySynced} already synced\n` +
     `API calls used: ${stats.workspaceCalls} / ${stats.budget}` +
@@ -1786,30 +1796,72 @@ function getTagLogDisagreementCount() {
     const allEntries = fetchTimeEntriesAllUsers(dateRange.startDate, dateRange.endDate);
     const alreadySyncedMap = buildAlreadySyncedMap();
 
-    let missingTag = 0; // Sync_Log says Success, Toggl entry isn't tagged Synced (the reliability gap D1a targets)
-    let missingLog = 0; // Toggl entry tagged Synced, but Sync_Log has no Success row for it
-
-    allEntries.forEach(entry => {
-      const entryId = String(entry.id || entry.time_entry_id);
-      const entryTags = resolveEntryTags(entry, tagLookup);
-      const hasSyncedTag = entryTags.some(t => t.toLowerCase() === syncedTag.toLowerCase());
-      const hasLogSuccess = alreadySyncedMap.has(entryId);
-
-      if (hasLogSuccess && !hasSyncedTag) missingTag++;
-      if (hasSyncedTag && !hasLogSuccess) missingLog++;
-    });
-
-    return {
-      count: missingTag + missingLog,
-      missingTag,
-      missingLog,
-      checked: allEntries.length,
-      skipped: false,
-      reason: null
-    };
+    return computeDisagreementFromEntries(allEntries, tagLookup, alreadySyncedMap, syncedTag);
   } catch (e) {
     logMessage(`Tag/log disagreement check failed: ${e.message}`, 'WARN');
     return { count: 0, missingTag: 0, missingLog: 0, checked: 0, skipped: true, reason: e.message };
+  }
+}
+
+/**
+ * Pure comparison — no Toggl calls of its own. Factored out of
+ * getTagLogDisagreementCount so a sync run (which has already fetched
+ * allEntries/tagLookup/alreadySyncedMap for its own purposes) can compute
+ * the same disagreement snapshot at effectively zero additional cost,
+ * instead of getDashboard paying for a fresh fetch on every page load.
+ * @returns {{count: number, missingTag: number, missingLog: number, checked: number, skipped: false, reason: null}}
+ */
+function computeDisagreementFromEntries(allEntries, tagLookup, alreadySyncedMap, syncedTag) {
+  let missingTag = 0; // Sync_Log says Success, Toggl entry isn't tagged Synced (the reliability gap D1a targets)
+  let missingLog = 0; // Toggl entry tagged Synced, but Sync_Log has no Success row for it
+
+  allEntries.forEach(entry => {
+    const entryId = String(entry.id || entry.time_entry_id);
+    const entryTags = resolveEntryTags(entry, tagLookup);
+    const hasSyncedTag = entryTags.some(t => t.toLowerCase() === syncedTag.toLowerCase());
+    const hasLogSuccess = alreadySyncedMap.has(entryId);
+
+    if (hasLogSuccess && !hasSyncedTag) missingTag++;
+    if (hasSyncedTag && !hasLogSuccess) missingLog++;
+  });
+
+  return {
+    count: missingTag + missingLog,
+    missingTag,
+    missingLog,
+    checked: allEntries.length,
+    skipped: false,
+    reason: null
+  };
+}
+
+/**
+ * Persists a disagreement snapshot (Script Property) with a fresh
+ * computedAt, so getDashboard can read it for free instead of computing it
+ * on every page load. Returns the stamped snapshot so callers that need to
+ * hand it straight back to a caller (the on-demand recompute action) use
+ * the exact timestamp that was persisted, not a second, slightly later one.
+ */
+function saveDisagreementSnapshot(snapshot) {
+  const stamped = { ...snapshot, computedAt: formatDateTime(new Date()) };
+  setScriptProperty('TAG_LOG_DISAGREEMENT', JSON.stringify(stamped));
+  return stamped;
+}
+
+/**
+ * @returns {Object|null} The last persisted disagreement snapshot, or null
+ *   if one has never been computed (a fresh install, or before the first
+ *   sync run after this feature shipped). Callers must treat null as "no
+ *   trustworthy number exists yet," not as zero.
+ */
+function loadDisagreementSnapshot() {
+  const json = getScriptProperty('TAG_LOG_DISAGREEMENT');
+  if (!json) return null;
+  try {
+    return JSON.parse(json);
+  } catch (e) {
+    logMessage(`Error parsing disagreement snapshot: ${e.message}`, 'WARN');
+    return null;
   }
 }
 
@@ -2388,6 +2440,17 @@ function syncApprovedEntriesWithState(existingState = null) {
   // (We only saved IDs in state, not full entry data)
   const dateRange = getImportDateRange();
   const allEntries = fetchTimeEntriesAllUsers(dateRange.startDate, dateRange.endDate);
+
+  // Built unconditionally (not just in the fresh-sync branch above) because
+  // resume is the only path actually exercised in production — resumePendingSync
+  // always calls this with a real existingState — so a tagLookup built only
+  // in the "else" branch would never exist by the time we reach the
+  // disagreement snapshot at the bottom of this function. fetchTogglTags()
+  // is cached, so this costs nothing extra when it's already been fetched.
+  const tags = fetchTogglTags();
+  const tagLookup = {};
+  tags.forEach(t => { tagLookup[t.id] = t.name; });
+
   const entryMap = {};
   allEntries.forEach(e => {
     const id = e.id || e.time_entry_id;
@@ -2500,6 +2563,14 @@ function syncApprovedEntriesWithState(existingState = null) {
   const stats = getApiUsageStats();
   setConfigValue('LAST_SYNC_API_CALLS', stats.workspaceCalls);
   setConfigValue('LAST_SYNC_DATE', formatDateTime(new Date()));
+
+  // Dashboard speed: same rationale as syncApprovedEntries — reuse this
+  // run's already-fetched data instead of getDashboard paying for it.
+  try {
+    saveDisagreementSnapshot(computeDisagreementFromEntries(allEntries, tagLookup, alreadySyncedMap, syncedTag));
+  } catch (e) {
+    logMessage(`Disagreement snapshot failed (non-fatal): ${e.message}`, 'WARN');
+  }
 
   if (totalTaggingFailed > 0) {
     logMessage(`⚠ ${totalTaggingFailed} entries synced but failed to tag "${syncedTag}"`, 'WARN');

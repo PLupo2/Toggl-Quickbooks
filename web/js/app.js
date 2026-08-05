@@ -163,21 +163,42 @@ const Pages = {
   // ---------------------------------------------------------------------------
   // Dashboard — Status only (no sync actions)
   // ---------------------------------------------------------------------------
+  // Progressive rendering: paint the shell (4 cards, each with its own
+  // spinner) synchronously, then let each section's fetch fill in
+  // independently. getConnectionStatus and getDashboard are two separate
+  // round trips with different, sometimes-slow costs (live QBO/Toggl
+  // connectivity checks vs sheet reads) — no reason a slow one should
+  // delay painting the other's data, or block the whole page on a spinner.
   async dashboard() {
     const _rt = App.renderToken;
     const content = document.getElementById('content');
-    content.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div> Loading dashboard...</div>';
 
+    content.innerHTML = `
+      <div class="card" id="dash-connection">${Pages._sectionLoading()}</div>
+      <div class="card" id="dash-sync-status">${Pages._sectionLoading()}</div>
+      <div class="card" id="dash-mappings">${Pages._sectionLoading()}</div>
+      <div class="card" id="dash-disagreement">${Pages._sectionLoading()}</div>`;
+
+    Pages._loadConnectionStatus(_rt);
+    Pages._loadDashboardData(_rt);
+  },
+
+  _sectionLoading() {
+    return '<div style="text-align:center;padding:24px"><div class="spinner"></div></div>';
+  },
+
+  _sectionError(label, err, retryFn) {
+    return `<div class="card-title">${label}</div>
+      <p style="color:var(--danger)">Failed to load: ${err.message}</p>
+      ${retryFn ? `<button class="btn btn-sm" onclick="${retryFn}">Retry</button>` : ''}`;
+  },
+
+  async _loadConnectionStatus(_rt) {
+    const el = document.getElementById('dash-connection');
     try {
-      // Fetch dashboard data and connection status in parallel
-      // Note: previewApproved is NOT called here to avoid hitting the Toggl Reports API
-      // on every dashboard load. Pending count is shown on the Sync Entries page instead.
-      const [data, connStatus] = await Promise.all([
-        API.get('getDashboard'),
-        API.get('getConnectionStatus')
-      ]);
+      const connStatus = await API.get('getConnectionStatus');
+      if (Pages._stale(_rt) || !el) return;
 
-      // Connection status badges
       const qboBadge = connStatus.qbo.connected
         ? `<span class="badge badge-success">Connected</span>`
         : `<span class="badge badge-danger">Disconnected</span>`;
@@ -185,78 +206,144 @@ const Pages = {
         ? `<span class="badge badge-success">Connected</span>`
         : `<span class="badge badge-danger">Disconnected</span>`;
 
-      // Mapping completeness cards
-      const mappingCards = Object.entries(data.mappings).map(([key, m]) => {
-        const pct = m.total > 0 ? Math.round((m.mapped / m.total) * 100) : 0;
-        const barClass = pct === 100 ? 'progress-bar-success' : pct >= 50 ? 'progress-bar-warning' : 'progress-bar-danger';
-        return `
+      el.innerHTML = `
+        <div class="card-title">Connection Status</div>
+        <div class="stats-grid" style="grid-template-columns: 1fr 1fr">
           <div class="stat">
-            <div class="stat-label">${key.charAt(0).toUpperCase() + key.slice(1)}</div>
-            <div class="stat-value">${m.mapped}/${m.total}</div>
-            <div class="progress"><div class="progress-bar ${barClass}" style="width:${pct}%"></div></div>
-            <div class="stat-detail">${m.unmapped > 0 ? `${m.unmapped} unmapped` : 'All mapped'}</div>
-          </div>`;
-      }).join('');
-
-      // Pending sync badge
-      const pendingHtml = data.sync.hasPendingSync
-        ? '<span class="badge badge-warning">Paused</span>'
-        : '';
-
-      if (Pages._stale(_rt)) return;
-      content.innerHTML = `
-        <div class="card">
-          <div class="card-title">Connection Status</div>
-          <div class="stats-grid" style="grid-template-columns: 1fr 1fr">
-            <div class="stat">
-              <div class="stat-label">QuickBooks Online</div>
-              <div style="margin-top:4px">${qboBadge}</div>
-              <div class="stat-detail">${connStatus.qbo.realmId ? 'Realm: ' + connStatus.qbo.realmId : ''}</div>
-            </div>
-            <div class="stat">
-              <div class="stat-label">Toggl Track</div>
-              <div style="margin-top:4px">${togglBadge}</div>
-              <div class="stat-detail">${connStatus.toggl.workspaceId ? 'Workspace: ' + connStatus.toggl.workspaceId : ''}</div>
-            </div>
+            <div class="stat-label">QuickBooks Online</div>
+            <div style="margin-top:4px">${qboBadge}</div>
+            <div class="stat-detail">${connStatus.qbo.realmId ? 'Realm: ' + connStatus.qbo.realmId : ''}</div>
           </div>
-        </div>
-
-        <div class="card">
-          <div class="card-title">Sync Status</div>
-          <div class="stats-grid">
-            <div class="stat">
-              <div class="stat-label">Last Sync</div>
-              <div class="stat-value" style="font-size:16px">${formatDateTime(data.sync.lastSync)}</div>
-              <div class="stat-detail">${data.sync.logEntries.toLocaleString()} entries synced ${pendingHtml}</div>
-            </div>
-            <div class="stat">
-              <div class="stat-label">Date Range</div>
-              <div class="stat-value" style="font-size:14px">${data.sync.dateRange.start || '—'} to ${data.sync.dateRange.end || '—'}</div>
-              <div class="stat-detail">Go to Sync Entries to preview</div>
-            </div>
-            <div class="stat">
-              <div class="stat-label">API Budget</div>
-              <div class="stat-value" style="font-size:16px">${data.api.lastSyncCalls || 0}/${data.api.budget}</div>
-              ${(() => {
-                const used = parseInt(data.api.lastSyncCalls) || 0;
-                const budget = parseInt(data.api.budget) || 180;
-                const pct = budget > 0 ? Math.round((used / budget) * 100) : 0;
-                const barClass = pct >= 90 ? 'progress-bar-danger' : pct >= 60 ? 'progress-bar-warning' : 'progress-bar-success';
-                return `<div class="progress"><div class="progress-bar ${barClass}" style="width:${pct}%"></div></div>`;
-              })()}
-              <div class="stat-detail">${data.api.lastSyncCalls ? 'Last sync used ' + data.api.lastSyncCalls + ' of ' + data.api.budget + ' calls/hr' : 'No sync data yet'}</div>
-            </div>
+          <div class="stat">
+            <div class="stat-label">Toggl Track</div>
+            <div style="margin-top:4px">${togglBadge}</div>
+            <div class="stat-detail">${connStatus.toggl.workspaceId ? 'Workspace: ' + connStatus.toggl.workspaceId : ''}</div>
           </div>
-        </div>
-
-        <div class="card">
-          <div class="card-title">Mapping Completeness</div>
-          <div class="stats-grid">${mappingCards}</div>
         </div>`;
     } catch (err) {
+      if (Pages._stale(_rt) || !el) return;
+      el.innerHTML = Pages._sectionError('Connection Status', err, "Pages._loadConnectionStatus(App.renderToken)");
+    }
+  },
+
+  // Note: previewApproved is NOT called here to avoid hitting the Toggl
+  // Reports API on every dashboard load. Pending count is shown on the
+  // Sync Entries page instead. getDashboard itself is a sheet-only read as
+  // of the 2026-08 speed fix — the disagreement count it returns is a
+  // persisted snapshot from the last sync run, not computed live here.
+  async _loadDashboardData(_rt) {
+    const elSync = document.getElementById('dash-sync-status');
+    const elMappings = document.getElementById('dash-mappings');
+    const elDisagreement = document.getElementById('dash-disagreement');
+
+    try {
+      const data = await API.get('getDashboard');
       if (Pages._stale(_rt)) return;
-      content.innerHTML = `<div class="card"><p style="color:var(--danger)">Failed to load dashboard: ${err.message}</p>
-        <button class="btn" onclick="Pages.dashboard()">Retry</button></div>`;
+
+      if (elSync) elSync.innerHTML = Pages._renderSyncStatusCard(data);
+      if (elMappings) elMappings.innerHTML = Pages._renderMappingsCard(data);
+      if (elDisagreement) elDisagreement.innerHTML = Pages._renderDisagreementCard(data.tags.disagreement);
+    } catch (err) {
+      if (Pages._stale(_rt)) return;
+      const retry = "Pages._loadDashboardData(App.renderToken)";
+      if (elSync) elSync.innerHTML = Pages._sectionError('Sync Status', err, retry);
+      if (elMappings) elMappings.innerHTML = Pages._sectionError('Mapping Completeness', err, retry);
+      if (elDisagreement) elDisagreement.innerHTML = Pages._sectionError('Tag/Log Disagreement', err, retry);
+    }
+  },
+
+  _renderSyncStatusCard(data) {
+    const pendingHtml = data.sync.hasPendingSync
+      ? '<span class="badge badge-warning">Paused</span>'
+      : '';
+    const used = parseInt(data.api.lastSyncCalls) || 0;
+    const budget = parseInt(data.api.budget) || 180;
+    const pct = budget > 0 ? Math.round((used / budget) * 100) : 0;
+    const barClass = pct >= 90 ? 'progress-bar-danger' : pct >= 60 ? 'progress-bar-warning' : 'progress-bar-success';
+
+    return `
+      <div class="card-title">Sync Status</div>
+      <div class="stats-grid">
+        <div class="stat">
+          <div class="stat-label">Last Sync</div>
+          <div class="stat-value" style="font-size:16px">${formatDateTime(data.sync.lastSync)}</div>
+          <div class="stat-detail">${data.sync.logEntries.toLocaleString()} entries synced ${pendingHtml}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Date Range</div>
+          <div class="stat-value" style="font-size:14px">${data.sync.dateRange.start || '—'} to ${data.sync.dateRange.end || '—'}</div>
+          <div class="stat-detail">Go to Sync Entries to preview</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">API Budget</div>
+          <div class="stat-value" style="font-size:16px">${data.api.lastSyncCalls || 0}/${data.api.budget}</div>
+          <div class="progress"><div class="progress-bar ${barClass}" style="width:${pct}%"></div></div>
+          <div class="stat-detail">${data.api.lastSyncCalls ? 'Last sync used ' + data.api.lastSyncCalls + ' of ' + data.api.budget + ' calls/hr' : 'No sync data yet'}</div>
+        </div>
+      </div>`;
+  },
+
+  _renderMappingsCard(data) {
+    const mappingCards = Object.entries(data.mappings).map(([key, m]) => {
+      const pct = m.total > 0 ? Math.round((m.mapped / m.total) * 100) : 0;
+      const barClass = pct === 100 ? 'progress-bar-success' : pct >= 50 ? 'progress-bar-warning' : 'progress-bar-danger';
+      return `
+        <div class="stat">
+          <div class="stat-label">${key.charAt(0).toUpperCase() + key.slice(1)}</div>
+          <div class="stat-value">${m.mapped}/${m.total}</div>
+          <div class="progress"><div class="progress-bar ${barClass}" style="width:${pct}%"></div></div>
+          <div class="stat-detail">${m.unmapped > 0 ? `${m.unmapped} unmapped` : 'All mapped'}</div>
+        </div>`;
+    }).join('');
+
+    return `<div class="card-title">Mapping Completeness</div><div class="stats-grid">${mappingCards}</div>`;
+  },
+
+  // D1(b) dashboard card. The count is a snapshot computed during the last
+  // sync run (see Toggl.gs computeDisagreementFromEntries), not live —
+  // computedAt is always shown so a stale number is never mistaken for a
+  // fresh one. Recompute triggers a real Toggl fetch on demand.
+  _renderDisagreementCard(disagreement) {
+    if (!disagreement) {
+      return `<div class="card-title">Tag/Log Disagreement</div><p style="color:var(--text-secondary)">Unavailable</p>`;
+    }
+
+    const computedText = disagreement.computedAt
+      ? `as of ${formatDateTime(disagreement.computedAt)}`
+      : 'never computed';
+
+    const statusLine = disagreement.skipped
+      ? `<p style="color:var(--text-secondary)">Not available — ${disagreement.reason || 'skipped'}</p>`
+      : disagreement.count > 0
+        ? `<p style="color:var(--warning)">⚠ ${disagreement.count} entries disagree (${disagreement.missingTag} missing tag, ${disagreement.missingLog} missing log) — ${disagreement.checked} checked</p>`
+        : `<p style="color:var(--success)">No disagreement — ${disagreement.checked} checked</p>`;
+
+    return `
+      <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Tag/Log Disagreement</span>
+        <button class="btn btn-sm" id="recompute-disagreement-btn" onclick="Pages.recomputeDisagreement()">Recompute</button>
+      </div>
+      ${statusLine}
+      <div class="stat-detail">Computed ${computedText}. Updates automatically after each sync run.</div>`;
+  },
+
+  async recomputeDisagreement() {
+    const btn = document.getElementById('recompute-disagreement-btn');
+    const el = document.getElementById('dash-disagreement');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<div class="spinner"></div>';
+    }
+
+    try {
+      const result = await API.post('recomputeDisagreement');
+      if (el) el.innerHTML = Pages._renderDisagreementCard(result);
+    } catch (err) {
+      Toast.error('Recompute failed: ' + err.message);
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Recompute';
+      }
     }
   },
 
@@ -266,43 +353,108 @@ const Pages = {
   _syncConfig: null,
   _syncPreview: null,
 
+  // Progressive rendering: paint the shell immediately, then Step 1 (date
+  // range, from getConfig) and Step 2 (preview + job status) fill in
+  // independently — Step 2 needs both previewApproved (the slower of the
+  // two, a live Toggl fetch) and getSyncJobStatus together, but neither
+  // blocks Step 1 from appearing as soon as getConfig resolves.
   async sync() {
     const _rt = App.renderToken;
     const content = document.getElementById('content');
-    content.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div> Loading...</div>';
 
+    content.innerHTML = `
+      <div class="info-box">
+        <strong>How it works:</strong> Select a date range and click Preview to see approved entries in Toggl,
+        review them, then click Sync to create time entries in QuickBooks.
+      </div>
+      <div id="sync-job-banner-slot"></div>
+      <div class="card" id="sync-step1">${Pages._sectionLoading()}</div>
+      <div class="card" id="sync-step2">${Pages._sectionLoading()}</div>`;
+
+    Pages._loadSyncStep1(_rt);
+    Pages._loadSyncStep2(_rt);
+  },
+
+  async _loadSyncStep1(_rt) {
+    const el = document.getElementById('sync-step1');
     try {
-      // Fetch config first
       const config = await API.get('getConfig');
       Pages._syncConfig = config;
+      if (Pages._stale(_rt) || !el) return;
+      el.innerHTML = Pages._renderStep1(config);
 
-      // Initial preview with saved dates
-      const preview = await API.get('previewApproved');
-      Pages._syncPreview = preview;
+      if (typeof flatpickr !== 'undefined') {
+        flatpickr('#sync-startDate', { dateFormat: 'Y-m-d', locale: { firstDayOfWeek: 1 } });
+        flatpickr('#sync-endDate', { dateFormat: 'Y-m-d', locale: { firstDayOfWeek: 1 } });
+      }
+    } catch (err) {
+      if (Pages._stale(_rt) || !el) return;
+      el.innerHTML = Pages._sectionError('Step 1: Select Date Range', err, "Pages._loadSyncStep1(App.renderToken)");
+    }
+  },
 
+  async _loadSyncStep2(_rt) {
+    const el = document.getElementById('sync-step2');
+    try {
       // D5: if a job is already active (e.g. the operator navigated away
       // mid-sync and came back), resume showing/polling it instead of the
       // normal idle state. Reads persisted server state, not anything held
       // in this tab — a page reload picks the same job back up.
-      const jobStatus = await API.get('getSyncJobStatus');
+      const [preview, jobStatus] = await Promise.all([
+        API.get('previewApproved'),
+        API.get('getSyncJobStatus')
+      ]);
+      Pages._syncPreview = preview;
+      if (Pages._stale(_rt) || !el) return;
 
-      if (Pages._stale(_rt)) return;
-      Pages._renderSyncPage(config, preview, jobStatus);
+      Pages._renderJobBanner(jobStatus);
+      el.innerHTML = Pages._renderStep2(preview, jobStatus);
 
       if (jobStatus.status === 'running' || jobStatus.status === 'paused') {
         Pages._pollSyncJob(jobStatus.jobId); // not awaited — runs in the background
       }
     } catch (err) {
-      if (Pages._stale(_rt)) return;
-      content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${err.message}</p>
-        <button class="btn" onclick="Pages.sync()">Retry</button></div>`;
+      if (Pages._stale(_rt) || !el) return;
+      el.innerHTML = Pages._sectionError('Step 2: Review & Sync', err, "Pages._loadSyncStep2(App.renderToken)");
     }
   },
 
-  _renderSyncPage(config, preview, jobStatus) {
-    const content = document.getElementById('content');
+  _renderJobBanner(jobStatus) {
+    const slot = document.getElementById('sync-job-banner-slot');
+    if (!slot) return;
+    // D5: sync now runs as a background job (Cloudflare abandons long-running
+    // requests around ~100s, which used to present a successful sync as a
+    // failed one). This banner reflects persisted server state, so it's
+    // accurate even right after a page reload mid-sync.
+    const jobActive = jobStatus && (jobStatus.status === 'running' || jobStatus.status === 'paused');
+    slot.innerHTML = jobActive ? `
+      <div class="info-box" id="sync-job-banner" style="border-color:var(--success)">
+        <div class="spinner" style="display:inline-block;vertical-align:middle;margin-right:8px"></div>
+        <span id="sync-job-banner-text">Sync in progress...</span>
+      </div>` : '';
+  },
 
-    // Build preview table
+  _renderStep1(config) {
+    return `
+      <div class="card-title">Step 1: Select Date Range</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:16px;align-items:end">
+        <div class="form-group" style="margin-bottom:0">
+          <label>Start Date</label>
+          <input type="date" id="sync-startDate" value="${config.startDate || ''}">
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>End Date</label>
+          <input type="date" id="sync-endDate" value="${config.endDate || ''}">
+        </div>
+        <button class="btn btn-primary" id="preview-btn" onclick="Pages.refreshPreview()">
+          Preview Entries
+        </button>
+      </div>`;
+  },
+
+  _renderStep2(preview, jobStatus) {
+    const jobActive = jobStatus && (jobStatus.status === 'running' || jobStatus.status === 'paused');
+
     let previewHtml = '';
     if (preview.count === 0) {
       previewHtml = `
@@ -333,65 +485,16 @@ const Pages = {
         </div>`;
     }
 
-    // D5: sync now runs as a background job (Cloudflare abandons long-running
-    // requests around ~100s, which used to present a successful sync as a
-    // failed one). This banner reflects persisted server state, so it's
-    // accurate even right after a page reload mid-sync.
-    const jobActive = jobStatus && (jobStatus.status === 'running' || jobStatus.status === 'paused');
-    const syncJobBanner = jobActive ? `
-      <div class="info-box" id="sync-job-banner" style="border-color:var(--success)">
-        <div class="spinner" style="display:inline-block;vertical-align:middle;margin-right:8px"></div>
-        <span id="sync-job-banner-text">Sync in progress...</span>
-      </div>` : '';
-
-    content.innerHTML = `
-      <div class="info-box">
-        <strong>How it works:</strong> Select a date range and click Preview to see entries tagged "${preview.approvedTag}" in Toggl.
-        Review them, then click Sync to create time entries in QuickBooks and tag them as "${preview.syncedTag}" in Toggl.
-      </div>
-
-      ${syncJobBanner}
-
-      <div class="card">
-        <div class="card-title">Step 1: Select Date Range</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:16px;align-items:end">
-          <div class="form-group" style="margin-bottom:0">
-            <label>Start Date</label>
-            <input type="date" id="sync-startDate" value="${config.startDate || ''}">
-          </div>
-          <div class="form-group" style="margin-bottom:0">
-            <label>End Date</label>
-            <input type="date" id="sync-endDate" value="${config.endDate || ''}">
-          </div>
-          <button class="btn btn-primary" id="preview-btn" onclick="Pages.refreshPreview()">
-            Preview Entries
+    return `
+      <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Step 2: Review & Sync ${preview.count > 0 ? `(${preview.count} entries)` : ''}</span>
+        ${preview.count > 0 ? `
+          <button class="btn btn-success" id="sync-btn" ${jobActive ? 'disabled' : ''} onclick="Pages.runSync()">
+            ${jobActive ? '<div class="spinner"></div> Syncing...' : `Sync ${preview.count} Entries to QuickBooks`}
           </button>
-        </div>
+        ` : ''}
       </div>
-
-      <div class="card">
-        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-          <span>Step 2: Review & Sync ${preview.count > 0 ? `(${preview.count} entries)` : ''}</span>
-          ${preview.count > 0 ? `
-            <button class="btn btn-success" id="sync-btn" ${jobActive ? 'disabled' : ''} onclick="Pages.runSync()">
-              ${jobActive ? '<div class="spinner"></div> Syncing...' : `Sync ${preview.count} Entries to QuickBooks`}
-            </button>
-          ` : ''}
-        </div>
-        ${previewHtml}
-      </div>`;
-
-    // Initialize date pickers with Monday as first day of week
-    if (typeof flatpickr !== 'undefined') {
-      flatpickr('#sync-startDate', {
-        dateFormat: 'Y-m-d',
-        locale: { firstDayOfWeek: 1 }
-      });
-      flatpickr('#sync-endDate', {
-        dateFormat: 'Y-m-d',
-        locale: { firstDayOfWeek: 1 }
-      });
-    }
+      ${previewHtml}`;
   },
 
   async refreshPreview() {
@@ -410,14 +513,22 @@ const Pages = {
         return;
       }
 
-      // Fetch preview with form dates (not saved dates)
-      const preview = await API.get('previewApproved', { startDate, endDate });
+      // Fetch preview with form dates (not saved dates). Also re-check job
+      // status — a job could have been started from another tab/session
+      // since this page loaded; without this the banner would incorrectly
+      // disappear on a manual preview refresh while a sync is running.
+      const [preview, jobStatus] = await Promise.all([
+        API.get('previewApproved', { startDate, endDate }),
+        API.get('getSyncJobStatus')
+      ]);
       Pages._syncPreview = preview;
       Pages._syncConfig.startDate = startDate;
       Pages._syncConfig.endDate = endDate;
 
       // Render results immediately (don't wait for save)
-      Pages._renderSyncPage(Pages._syncConfig, preview);
+      Pages._renderJobBanner(jobStatus);
+      const el = document.getElementById('sync-step2');
+      if (el) el.innerHTML = Pages._renderStep2(preview, jobStatus);
       Toast.success(`Found ${preview.count} approved entries`);
 
       // Save dates in background (non-blocking)
@@ -464,17 +575,34 @@ const Pages = {
     }
   },
 
+  _setSyncProgressText(text) {
+    const bannerText = document.getElementById('sync-job-banner-text');
+    const btn = document.getElementById('sync-btn');
+    if (bannerText) bannerText.textContent = text;
+    if (btn) btn.innerHTML = `<div class="spinner"></div> ${text}`;
+  },
+
   /**
    * Polls getSyncJobStatus until the job reaches a terminal state (D5).
    * Reused by runSync() (right after starting) and sync() (on page load,
    * if a job is already active). Reads persisted server state only — holds
    * nothing of its own beyond the renderToken staleness check, so a page
    * reload mid-sync picks the same job back up via sync() rather than
-   * losing track of it.
+   * losing track of it. A poll failure is handled quietly (reconnecting
+   * state, escalates only after sustained failure) — see the comment
+   * inside the loop for why.
    */
   async _pollSyncJob(jobId) {
     const _rt = App.renderToken;
     const POLL_INTERVAL_MS = 3000;
+    // A poll failure (network blip, or Apps Script's intermittent
+    // googleusercontent 404 window — corrected 2026-08-05: that window is
+    // sustained, tens of seconds, not a one-off) does NOT mean the sync
+    // failed. Job state is persisted server-side; this is only a read
+    // hiccup. Stay quiet and keep polling; escalate to a visible error
+    // only if failures are sustained, not on the first miss.
+    const ESCALATE_AFTER_MS = 120000; // ~2 minutes
+    let firstFailureAt = null;
 
     while (true) {
       if (Pages._stale(_rt)) return; // user navigated away — stop polling
@@ -482,9 +610,19 @@ const Pages = {
       let status;
       try {
         status = await API.get('getSyncJobStatus');
+        firstFailureAt = null; // recovered
       } catch (err) {
-        Toast.error('Lost track of sync status: ' + err.message);
-        return;
+        if (!firstFailureAt) firstFailureAt = Date.now();
+        const failingForMs = Date.now() - firstFailureAt;
+
+        if (failingForMs >= ESCALATE_AFTER_MS) {
+          Toast.error(`Lost track of sync status for ${Math.round(failingForMs / 1000)}s: ${err.message}. The sync itself may still be running — check back shortly or reload.`);
+          return;
+        }
+
+        Pages._setSyncProgressText('Reconnecting to check sync status…');
+        await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+        continue;
       }
 
       if (Pages._stale(_rt)) return;
@@ -511,11 +649,7 @@ const Pages = {
       const progress = status.pending
         ? `${status.synced} synced, ${status.pending.pendingEntries} pending — paused for rate limit, resumes automatically`
         : `${status.synced} synced so far...`;
-
-      const bannerText = document.getElementById('sync-job-banner-text');
-      const btn = document.getElementById('sync-btn');
-      if (bannerText) bannerText.textContent = progress;
-      if (btn) btn.innerHTML = `<div class="spinner"></div> ${progress}`;
+      Pages._setSyncProgressText(progress);
 
       await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
     }
