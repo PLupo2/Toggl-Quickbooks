@@ -5,13 +5,15 @@ Phase 2 (Cloudflare Access migration). Proxies `/api/*` on
 server-side secrets that make the write path safe. See `src/index.js` for
 the why; see the spec doc (Phase 2 + erratum) for the full architecture.
 
-## Deploy (manual — requires a Cloudflare API token scoped for Workers Scripts
-and Access, which the current `~/secrets/cloudflare_api_token.txt` does not
-have)
+## Deploy (manual)
+
+Use `~/secrets/cloudflare_workers_token.txt` — verified 2026-08-04 to have
+Workers Scripts edit scope. Do NOT use `cloudflare_api_token.txt` (DNS only)
+or `cloudflare_access_token.txt` (Access only). No new token is needed.
 
 ```bash
 cd worker
-npx wrangler login   # or set CLOUDFLARE_API_TOKEN env var
+export CLOUDFLARE_API_TOKEN=$(cat ~/secrets/cloudflare_workers_token.txt)
 npx wrangler secret put WEB_API_KEY      # paste: ol9rg7rlTCb4HpHCQJOxQ0JuVsyv5wwT
 npx wrangler secret put WORKER_SECRET    # generate a new random value — see below
 npx wrangler deploy

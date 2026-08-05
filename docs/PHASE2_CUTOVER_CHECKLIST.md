@@ -20,13 +20,33 @@ just not deployed:
 
 ## Prerequisites (do these first, before touching anything live)
 
-- [ ] Get a Cloudflare API token (or use the dashboard directly) with **Access: Apps and Policies: Edit** and **Workers Scripts: Edit** — the current `~/secrets/cloudflare_api_token.txt` has DNS-edit scope only and cannot do steps 1–3 below. Confirmed via API: both `accounts/{id}/access/apps` and `accounts/{id}/workers/scripts` return `Authentication error` with the current token.
-- [ ] `npx wrangler login` (or export `CLOUDFLARE_API_TOKEN` with the new token) — wrangler is not installed locally, `npx` pulls it on demand.
+- [ ] **Token selection — no new token needed.** Verified 2026-08-04: three existing tokens in `~/secrets/` cover all three API surfaces. Use the right one per step; do NOT create a combined token (wider blast radius than the job requires).
+
+  | Step | Task | Token file |
+  |------|------|-----------|
+  | 1 | DNS proxy flip | `cloudflare_api_token.txt` |
+  | 2 | Access application | `cloudflare_access_token.txt` |
+  | 3 | Worker deploy + secrets | `cloudflare_workers_token.txt` |
+
+  Verified by API probe (200 = allowed, 403 = blocked):
+  - `cloudflare_api_token.txt` — DNS 200, Access 403, Workers 403
+  - `cloudflare_access_token.txt` — Access 200, DNS 403, Workers 403
+  - `cloudflare_workers_token.txt` — Workers 200, Access 403, DNS 403
+  - `cloudflare_wrangler_token.txt` — duplicate of workers token; ignore
+
+  Account ID `3a90eb4c3c67a40a1c4432b4dffc774d` · Zone ID `f8560ea50c7d4be88bc51ebfd022c1ea`
+- [ ] For step 3, export the Workers token rather than `wrangler login`:
+  ```bash
+  export CLOUDFLARE_API_TOKEN=$(cat ~/secrets/cloudflare_workers_token.txt)
+  ```
+  wrangler is not installed locally; `npx` pulls it on demand.
 - [ ] Generate `WORKER_SECRET`:
   ```bash
   python3 -c "import secrets,string; print(''.join(secrets.choice(string.ascii_letters+string.digits) for _ in range(32)))"
   ```
   Write it down — you need it in two places (step 3 and step 5).
+- [ ] **Git hygiene before any push (added 2026-08-04).** The Mac Mini repo is ahead 2 / behind 1 vs `origin/main` — remote has Philip's `.claspignore` commit (`8e86cb2`), local has `4fc4923` (Phase 2) + `1415162` (gitleaks config). Rebase before step 7: `git pull --rebase origin main`. No conflict expected (disjoint files).
+- [ ] **Delete `.github/workflows/static.yml` and include it in the step 7 push.** It caused the 2026-08-04 root-404 outage: it deploys the whole repo (`path: '.'`) with no path filter, racing `deploy-pages.yml` on every push. Disabled manually via `gh workflow disable static.yml` on 2026-08-04, but the file should go. If it is ever re-enabled, it will republish repo source (CLAUDE.md, .gs files, docs/) at the domain root.
 
 ## Step 1 — DNS: flip `timesync.pltheatrical.com` to proxied
 
