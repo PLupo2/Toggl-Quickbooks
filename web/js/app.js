@@ -381,11 +381,27 @@ const Pages = {
   },
 
   async runSync() {
-    // syncApproved is no longer callable from the dashboard — the web API
-    // key is a public static token and this action writes real QBO
-    // TimeActivity records. Run it from the Sheet: Toggl-QBO Sync > Sync
-    // Operations > Sync Approved Entries.
-    Toast.error('Sync now runs from the Sheet menu: Toggl-QBO Sync > Sync Operations > Sync Approved Entries.');
+    // Restored in Phase 2. The dashboard is behind Cloudflare Access and all
+    // /api traffic is proxied by a Worker that injects the credentials
+    // server-side, so no secret is exposed to the browser. Apps Script
+    // independently validates origin_secret before executing any write.
+    const btn = document.getElementById('sync-btn');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<div class="spinner"></div> Syncing...';
+    }
+
+    try {
+      const result = await API.post('syncApproved');
+      Toast.success(result.message || 'Sync completed!');
+      Pages.sync(); // Reload preview
+    } catch (err) {
+      Toast.error('Sync failed: ' + err.message);
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Sync Now';
+      }
+    }
   },
 
   // ---------------------------------------------------------------------------
