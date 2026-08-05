@@ -8,7 +8,7 @@ account_id = "3a90eb4c3c67a40a1c4432b4dffc774d"
 # else on the domain continues to be served by GitHub Pages — this Worker
 # does not host or proxy the frontend.
 routes = [
-  { pattern = "timesync.pltheatrical.com/api/*", zone_id = "f8560ea50c7d4be88bc51ebfd022c1ea" }
+  { pattern = "timesync.pltheatrical.com/api*", zone_id = "f8560ea50c7d4be88bc51ebfd022c1ea" }
 ]
 
 # Non-secret config. Secrets (WEB_API_KEY, WORKER_SECRET) are NOT set here —
