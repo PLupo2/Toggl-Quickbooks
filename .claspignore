@@ -1,2 +1,6 @@
 web/**
 docs/**
+worker/**
+kanban-board/**
+.github/**
+*.md
