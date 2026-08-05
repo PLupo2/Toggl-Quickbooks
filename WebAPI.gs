@@ -160,7 +160,7 @@ function handleApiRequest(params, isPost = false) {
       // flaw; this is the real fix, not a reversion of it.
       case 'syncApproved':
         if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
-        return jsonResponse(apiSyncApproved());
+        return jsonResponse(apiSyncApproved(params));
       case 'updateMapping':
         if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
         return jsonResponse(apiUpdateMapping(params));
@@ -232,6 +232,10 @@ function apiGetDashboard() {
   // API usage from last sync
   const lastSyncCalls = getConfigValue('LAST_SYNC_API_CALLS', '');
 
+  // D1(b): Sync_Log vs Toggl Synced-tag divergence. Costs a Toggl fetch,
+  // so it's budget-guarded and never throws — see getTagLogDisagreementCount.
+  const disagreement = getTagLogDisagreementCount();
+
   return {
     sync: {
       lastSync,
@@ -247,7 +251,18 @@ function apiGetDashboard() {
     },
     tags: {
       approved: getApprovedTagName(),
-      synced: getSyncedTagName()
+      synced: getSyncedTagName(),
+      disagreement: {
+        count: disagreement.count,
+        missingTag: disagreement.missingTag,   // Sync_Log Success, but Toggl entry isn't tagged Synced
+        missingLog: disagreement.missingLog,   // Tagged Synced, but Sync_Log has no Success row
+        checked: disagreement.checked,
+        skipped: disagreement.skipped,
+        reason: disagreement.reason,
+        warning: !disagreement.skipped && disagreement.count > 0
+          ? `${disagreement.count} entries disagree between Sync_Log and the Toggl "${getSyncedTagName()}" tag — see missingTag/missingLog.`
+          : null
+      }
     }
   };
 }
@@ -388,11 +403,16 @@ function apiGetConfig() {
 
 /**
  * Triggers sync of approved entries
+ * @param {Object} params - May include forceEntryIds (D4 per-entry override):
+ *   an array (JSON POST body) or comma-separated string of Toggl Entry IDs
+ *   to force-write even if Sync_Log already shows Status='Success' for them.
+ *   No global bypass — only entries explicitly named here skip the guard.
  */
-function apiSyncApproved() {
+function apiSyncApproved(params) {
+  params = params || {};
   let results;
   try {
-    results = syncApprovedEntries({ fromWebApi: true });
+    results = syncApprovedEntries({ fromWebApi: true, forceEntryIds: params.forceEntryIds });
   } catch (e) {
     // Catch any stray UI errors (SpreadsheetApp.getUi) that might occur
     // during sync notifications - the sync itself may have succeeded
@@ -403,6 +423,7 @@ function apiSyncApproved() {
     message: 'Sync completed',
     synced: results?.synced || 0,
     failed: results?.failed || 0,
+    alreadySynced: results?.alreadySynced || 0,
     lastSync: getConfigValue('LAST_SYNC_DATE', ''),
     apiCalls: getConfigValue('LAST_SYNC_API_CALLS', '')
   };
@@ -439,15 +460,18 @@ function apiPreviewApproved(params) {
   tags.forEach(t => { tagMap[t.id] = t.name; });
 
   const approvedTagId = Object.keys(tagMap).find(id => tagMap[id] === approvedTag);
-  const syncedTagId = Object.keys(tagMap).find(id => tagMap[id] === syncedTag);
 
-  // Filter to approved but not synced
+  // D1: Approved-tag alone. D2: split by the Sync_Log guard, not the Synced
+  // tag, so a stale/missing tag can't hide an already-synced entry from
+  // this count (or, worse, present it as one still needing to be written).
   const approvedEntries = allEntries.filter(entry => {
     const entryTagIds = entry.tag_ids || [];
-    const hasApproved = approvedTagId && entryTagIds.includes(Number(approvedTagId));
-    const hasSynced = syncedTagId && entryTagIds.includes(Number(syncedTagId));
-    return hasApproved && !hasSynced;
+    return approvedTagId && entryTagIds.includes(Number(approvedTagId));
   });
+
+  const alreadySyncedMap = buildAlreadySyncedMap();
+  const toSyncEntries = approvedEntries.filter(entry => !alreadySyncedMap.has(String(entry.id)));
+  const alreadySyncedCount = approvedEntries.length - toSyncEntries.length;
 
   // Build user lookup
   const users = fetchTogglUsers();
@@ -468,7 +492,11 @@ function apiPreviewApproved(params) {
     }
   });
 
-  const entries = approvedEntries.map(entry => ({
+  // entries/count stay scoped to "will actually be written" (unchanged
+  // contract — the frontend's Sync button reads count directly). The new
+  // approvedCount/alreadySyncedCount fields are additive, matching D2's
+  // "60 approved, 22 already synced, 38 will be written" split.
+  const entries = toSyncEntries.map(entry => ({
     id: entry.id,
     description: entry.description || '',
     user: userMap[entry.user_id] || entry.user_id,
@@ -481,6 +509,8 @@ function apiPreviewApproved(params) {
 
   return {
     count: entries.length,
+    approvedCount: approvedEntries.length,
+    alreadySyncedCount,
     dateRange,
     approvedTag,
     syncedTag,
@@ -654,7 +684,6 @@ function apiGetProjectPendingEntries(projectId) {
 
   const dateRange = getImportDateRange();
   const approvedTag = getApprovedTagName();
-  const syncedTag = getSyncedTagName();
 
   // Fetch entries from Toggl
   const allEntries = fetchTimeEntriesAllUsers(dateRange.startDate, dateRange.endDate);
@@ -665,17 +694,21 @@ function apiGetProjectPendingEntries(projectId) {
   tags.forEach(t => { tagMap[t.id] = t.name; });
 
   const approvedTagId = Object.keys(tagMap).find(id => tagMap[id] === approvedTag);
-  const syncedTagId = Object.keys(tagMap).find(id => tagMap[id] === syncedTag);
 
-  // Filter to entries for this project that are approved but not synced
+  // Not part of the 6-item guard scope, but the same D1 staleness problem
+  // applies here: this warns before archiving a project, so a stale Synced
+  // tag would falsely flag an already-synced project as having pending
+  // work. Same fix as the sync/preview paths: Sync_Log guard, not the tag.
+  const alreadySyncedMap = buildAlreadySyncedMap();
+
+  // Filter to entries for this project that are approved and not already synced
   const pendingEntries = allEntries.filter(entry => {
     if (String(entry.project_id) !== String(projectId)) {
       return false;
     }
     const entryTagIds = entry.tag_ids || [];
     const hasApproved = approvedTagId && entryTagIds.includes(Number(approvedTagId));
-    const hasSynced = syncedTagId && entryTagIds.includes(Number(syncedTagId));
-    return hasApproved && !hasSynced;
+    return hasApproved && !alreadySyncedMap.has(String(entry.id));
   });
 
   // Build user lookup for entry details

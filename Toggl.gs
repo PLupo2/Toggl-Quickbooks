@@ -1410,20 +1410,22 @@ function syncApprovedEntries(options = {}) {
   const allEntries = fetchTimeEntriesAllUsers(dateRange.startDate, dateRange.endDate);
   logMessage(`Fetched ${allEntries.length} total entries`, 'INFO');
 
-  // Filter for entries with Approved tag but NOT Synced tag
+  // D1: candidate selection is Approved-tag alone. The Synced tag is no
+  // longer an exclusion filter here — an entry that's actually already
+  // synced now gets caught (and reported) by the Sync_Log guard below,
+  // not silently dropped from the candidate list by a tag that may be
+  // stale, missing, or (per D4) deliberately not the reason to skip.
   const entriesToSync = allEntries.filter(entry => {
     const entryTags = resolveEntryTags(entry, tagLookup);
-    const hasApproved = entryTags.some(t => t.toLowerCase() === approvedTag.toLowerCase());
-    const hasSynced = entryTags.some(t => t.toLowerCase() === syncedTag.toLowerCase());
-    return hasApproved && !hasSynced;
+    return entryTags.some(t => t.toLowerCase() === approvedTag.toLowerCase());
   });
 
-  logMessage(`Found ${entriesToSync.length} entries with "${approvedTag}" tag (without "${syncedTag}")`, 'INFO');
+  logMessage(`Found ${entriesToSync.length} entries with "${approvedTag}" tag`, 'INFO');
 
   if (entriesToSync.length === 0) {
     const stats = getApiUsageStats();
     showToast(`No entries found with "${approvedTag}" tag to sync. (Used ${stats.workspaceCalls} API calls)`);
-    return { synced: 0, failed: 0, skipped: 0 };
+    return { synced: 0, failed: 0, alreadySynced: 0 };
   }
 
   // Build lookups for Toggl data (uses cache, reads tasks from sheet)
@@ -1432,42 +1434,80 @@ function syncApprovedEntries(options = {}) {
   // Build mapping lookups for QBO resolution
   const mappings = buildMappingLookups();
 
+  // D2: rebuilt at sync start, never inherited from a preview. Updated
+  // in-memory below as the run writes, so this run cannot double-write
+  // against its own output.
+  const alreadySyncedMap = buildAlreadySyncedMap();
+  const forceEntryIds = parseForceEntryIds(options.forceEntryIds);
+  if (forceEntryIds.size > 0) {
+    logMessage(`Override requested for ${forceEntryIds.size} entries: ${Array.from(forceEntryIds).join(', ')}`, 'WARN');
+  }
+
   // Process each entry
   const results = {
     synced: 0,
     failed: 0,
-    skipped: 0,
+    alreadySynced: 0,
     errors: [],
     syncedEntryIds: []
   };
 
   const pendingEntryIds = [];
+  const untaggedSyncedIds = []; // synced-but-not-yet-tagged (D1a: flushed incrementally, not just at the end)
 
   for (const entry of entriesToSync) {
     const entryId = entry.id || entry.time_entry_id;
 
-    // Check API budget before processing (reserve calls for tagging)
-    if (isApproachingApiLimit(5)) {
-      pendingEntryIds.push(entryId);
-      logMessage(`API budget low, deferring entry ${entryId}`, 'WARN');
-      continue;
-    }
-
     try {
       const processed = processTimeEntry(entry, togglLookups);
+      const existing = alreadySyncedMap.get(String(processed.togglEntryId));
+      const isOverride = forceEntryIds.has(String(processed.togglEntryId));
+
+      // D3: a detected duplicate skips that one entry and is reported, never
+      // halts the run. This check is local (Sync_Log already loaded above)
+      // and happens before any Toggl/QBO call, so a skip costs nothing
+      // against the API budget.
+      if (existing && !isOverride) {
+        results.alreadySynced++;
+        logSyncResult(processed, existing.qboId || '', 'Already synced', '');
+        continue;
+      }
+
+      if (isOverride) {
+        // existing may be undefined here — an override is valid even for an
+        // entry that was never actually a duplicate (operator being
+        // defensive); only mention a prior record if one actually exists.
+        const priorNote = existing ? ` (previous Success record: QBO TimeActivity ${existing.qboId})` : ' (no prior Success record found — not actually a duplicate)';
+        logMessage(`OVERRIDE: forcing re-sync of entry ${processed.togglEntryId}${priorNote}`, 'WARN');
+      }
+
+      // Budget check only applies here — an already-synced skip above never
+      // reaches a Toggl or QBO call, so it shouldn't count against the
+      // reserve that gates real writes.
+      if (isApproachingApiLimit(5)) {
+        pendingEntryIds.push(entryId);
+        logMessage(`API budget low, deferring entry ${entryId}`, 'WARN');
+        continue;
+      }
+
       const syncResult = syncSingleEntry(processed, mappings);
 
       if (syncResult.success) {
         results.synced++;
         results.syncedEntryIds.push(processed.togglEntryId);
+        untaggedSyncedIds.push(processed.togglEntryId);
+        alreadySyncedMap.set(String(processed.togglEntryId), { qboId: syncResult.qboId }); // D2: in-memory update
 
-        // Log to Sync_Log sheet
-        logSyncResult(processed, syncResult.qboId, 'Success', '');
+        logSyncResult(
+          processed, syncResult.qboId, 'Success',
+          isOverride ? `Override: forced re-sync${existing ? ` (previous QBO TimeActivity ${existing.qboId})` : ''}` : ''
+        );
+
+        // D1(a): incremental tag flush — don't wait for the whole run to finish.
+        maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, false);
       } else {
         results.failed++;
         results.errors.push({ entryId: processed.togglEntryId, error: syncResult.error });
-
-        // Log failure to Sync_Log sheet
         logSyncResult(processed, '', 'Failed', syncResult.error);
       }
     } catch (error) {
@@ -1488,11 +1528,16 @@ function syncApprovedEntries(options = {}) {
 
   // Check if we need to pause and resume later
   if (pendingEntryIds.length > 0) {
+    // D1(a): tag before this path returns — this used to be the exact gap
+    // that let a paused run leave real syncs untagged indefinitely.
+    maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, true);
+
     const state = {
       pendingEntryIds,
       syncedEntryIds: results.syncedEntryIds,
       totalSynced: results.synced,
       totalFailed: results.failed,
+      totalAlreadySynced: results.alreadySynced,
       pausedAt: formatDateTime(new Date())
     };
     saveSyncState(state);
@@ -1502,7 +1547,8 @@ function syncApprovedEntries(options = {}) {
     setConfigValue('LAST_SYNC_API_CALLS', stats.workspaceCalls);
 
     const message = `Sync paused: ${results.synced} synced, ${results.failed} failed, ` +
-      `${pendingEntryIds.length} pending.\n\nWill auto-resume in ~65 minutes when rate limit resets.\n` +
+      `${results.alreadySynced} already synced, ${pendingEntryIds.length} pending.\n\n` +
+      `Will auto-resume in ~65 minutes when rate limit resets.\n` +
       `API calls used: ${stats.workspaceCalls}`;
     logMessage(message, 'INFO');
     if (!options.fromWebApi) {
@@ -1512,19 +1558,16 @@ function syncApprovedEntries(options = {}) {
     return results;
   }
 
-  // All entries processed - add "Synced" tag using batch endpoint
-  if (results.syncedEntryIds.length > 0) {
-    logMessage(`Adding "${syncedTag}" tag to ${results.syncedEntryIds.length} entries (batch)...`, 'INFO');
-    const tagResults = addTagToMultipleEntries(results.syncedEntryIds, syncedTag);
-    logMessage(`Tagged ${tagResults.success} entries with ${tagResults.apiCalls} API calls`, 'INFO');
-  }
+  // All entries processed - flush any remaining untagged synced entries
+  maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, true);
 
   // Save API usage stats
   const stats = getApiUsageStats();
   setConfigValue('LAST_SYNC_API_CALLS', stats.workspaceCalls);
   setConfigValue('LAST_SYNC_DATE', formatDateTime(new Date()));
 
-  const message = `Sync complete: ${results.synced} synced, ${results.failed} failed\n` +
+  const message = `Sync complete: ${results.synced} synced, ${results.failed} failed, ` +
+    `${results.alreadySynced} already synced\n` +
     `API calls used: ${stats.workspaceCalls} / ${stats.budget}`;
   logMessage(message, 'INFO');
   if (!options.fromWebApi) {
@@ -1603,12 +1646,149 @@ function syncSingleEntry(entry, mappings) {
   }
 }
 
+// ============================================================================
+// IDEMPOTENCY GUARD (2026-08-05 design, spec doc "IDEMPOTENCY GUARD +
+// ASYNC SYNC" section, D1-D4 — D5 async is a separate, later delivery)
+// ============================================================================
+
+/**
+ * D1: Sync_Log is the sole authority for "already synced." The Toggl
+ * 'Synced' tag is no longer consulted as a guard — it is retained purely as
+ * Philip's Toggl Reports review surface (see maybeFlushSyncedTags and
+ * getTagLogDisagreementCount for the reliability half of that decision).
+ *
+ * D2: callers must rebuild this at sync start (never inherit a preview's
+ * snapshot) and update it in-memory as the run writes, so a single run
+ * cannot double-write against its own output.
+ *
+ * @returns {Map<string, {qboId: string}>} Toggl Entry ID (string) -> last known QBO TimeActivity ID
+ */
+function buildAlreadySyncedMap() {
+  const map = new Map();
+  const ss = getSpreadsheet();
+  const sheet = ss.getSheetByName(CONFIG.SHEETS.SYNC_LOG);
+  if (!sheet || sheet.getLastRow() <= 1) return map;
+
+  const headers = CONFIG.COLUMNS.SYNC_LOG;
+  const entryIdCol = headers.indexOf('Toggl Entry ID');
+  const qboIdCol = headers.indexOf('QBO TimeActivity ID');
+  const statusCol = headers.indexOf('Status');
+
+  const lastRow = sheet.getLastRow();
+  const data = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+
+  data.forEach(row => {
+    if (row[statusCol] === 'Success') {
+      const entryId = row[entryIdCol];
+      if (entryId !== '' && entryId !== null && entryId !== undefined) {
+        map.set(String(entryId), { qboId: row[qboIdCol] });
+      }
+    }
+  });
+
+  return map;
+}
+
+/**
+ * D4: normalizes a per-entry override list into a Set of string Toggl Entry
+ * IDs. No global bypass flag exists — this is the only escape hatch, and it
+ * is per-entry and logged (see the override branch in the sync loops).
+ * Accepts a real array (JSON POST body) or a comma-separated string (form
+ * field / query param), since doPost's e.parameter values are always
+ * strings but its parsed JSON body can carry a real array.
+ * @param {Array|string|undefined} raw
+ * @returns {Set<string>}
+ */
+function parseForceEntryIds(raw) {
+  if (!raw) return new Set();
+  const list = Array.isArray(raw) ? raw : String(raw).split(',');
+  return new Set(list.map(id => String(id).trim()).filter(id => id !== ''));
+}
+
+/**
+ * D1(a): tagging must be reliable now that it's informational-only — a
+ * missed tag can no longer cause a double-write, but it can mislead Philip's
+ * review. Flushes the queue via the 100-id bulk endpoint either once it's
+ * accumulated a full batch (incremental, during the run) or unconditionally
+ * when force=true (used at every early-return point, not just the terminal
+ * batch). Mutates untaggedIds in place (drains what it sends).
+ * @param {Array<string|number>} untaggedIds - synced-but-not-yet-tagged Toggl Entry IDs, mutated in place
+ * @param {string} syncedTag
+ * @param {boolean} force - flush even if under 100
+ */
+function maybeFlushSyncedTags(untaggedIds, syncedTag, force) {
+  if (untaggedIds.length === 0) return;
+  if (!force && untaggedIds.length < 100) return;
+
+  const batch = untaggedIds.splice(0, untaggedIds.length);
+  logMessage(`Tagging ${batch.length} entries with "${syncedTag}"...`, 'INFO');
+  const tagResults = addTagToMultipleEntries(batch, syncedTag);
+  logMessage(`Tagged ${tagResults.success} entries with ${tagResults.apiCalls} API calls`, 'INFO');
+}
+
+/**
+ * D1(b): surfaces divergence between Sync_Log (the guard, source of truth)
+ * and the Toggl 'Synced' tag (Philip's review surface) — silent divergence
+ * between the two is exactly how the 2026-05-27 to 2026-08-05 duplication
+ * went unseen. Scoped to the configured import date range, same as every
+ * other Toggl-fetching feature in this app (not an all-time scan).
+ *
+ * Costs one Toggl Reports fetch (same shape/cost as previewApproved) — not
+ * free, so this only runs if the budget can absorb it, and never throws:
+ * a failed or skipped check degrades the dashboard's disagreement count to
+ * "unavailable," it never breaks the dashboard load itself.
+ *
+ * @returns {{count: number, missingTag: number, missingLog: number, checked: number, skipped: boolean, reason: string|null}}
+ */
+function getTagLogDisagreementCount() {
+  if (isApproachingApiLimit(5)) {
+    return { count: 0, missingTag: 0, missingLog: 0, checked: 0, skipped: true, reason: 'API budget too low to check this execution' };
+  }
+
+  try {
+    const syncedTag = getSyncedTagName();
+    const dateRange = getImportDateRange();
+
+    const tags = fetchTogglTags();
+    const tagLookup = {};
+    tags.forEach(t => { tagLookup[t.id] = t.name; });
+
+    const allEntries = fetchTimeEntriesAllUsers(dateRange.startDate, dateRange.endDate);
+    const alreadySyncedMap = buildAlreadySyncedMap();
+
+    let missingTag = 0; // Sync_Log says Success, Toggl entry isn't tagged Synced (the reliability gap D1a targets)
+    let missingLog = 0; // Toggl entry tagged Synced, but Sync_Log has no Success row for it
+
+    allEntries.forEach(entry => {
+      const entryId = String(entry.id || entry.time_entry_id);
+      const entryTags = resolveEntryTags(entry, tagLookup);
+      const hasSyncedTag = entryTags.some(t => t.toLowerCase() === syncedTag.toLowerCase());
+      const hasLogSuccess = alreadySyncedMap.has(entryId);
+
+      if (hasLogSuccess && !hasSyncedTag) missingTag++;
+      if (hasSyncedTag && !hasLogSuccess) missingLog++;
+    });
+
+    return {
+      count: missingTag + missingLog,
+      missingTag,
+      missingLog,
+      checked: allEntries.length,
+      skipped: false,
+      reason: null
+    };
+  } catch (e) {
+    logMessage(`Tag/log disagreement check failed: ${e.message}`, 'WARN');
+    return { count: 0, missingTag: 0, missingLog: 0, checked: 0, skipped: true, reason: e.message };
+  }
+}
+
 /**
  * Logs a sync result to the Sync_Log sheet
  * @param {Object} entry - Processed entry
- * @param {string} qboId - QBO TimeActivity ID (empty if failed)
- * @param {string} status - Success or Failed
- * @param {string} error - Error message (empty if success)
+ * @param {string} qboId - QBO TimeActivity ID (empty if failed, or the prior run's ID for an 'Already synced' skip)
+ * @param {string} status - 'Success', 'Failed', or 'Already synced' (D3 — distinct from both)
+ * @param {string} error - Error message, or an override annotation for a forced re-sync (empty otherwise)
  */
 function logSyncResult(entry, qboId, status, error) {
   const ss = getSpreadsheet();
@@ -1680,14 +1860,15 @@ function previewApprovedEntries() {
 
   logMessage(`Fetched ${allEntries.length} total entries, checking for "${approvedTag}" tag...`, 'INFO');
 
-  const entriesToSync = allEntries.filter(entry => {
+  // D1: Approved-tag alone — the Synced tag no longer excludes an entry from
+  // the candidate list. D2: split the candidates by the Sync_Log guard so
+  // the operator sees the already-synced count before committing.
+  const approvedEntries = allEntries.filter(entry => {
     const entryTags = resolveEntryTags(entry, tagLookup);
-    const hasApproved = entryTags.some(t => t.toLowerCase() === approvedTag.toLowerCase());
-    const hasSynced = entryTags.some(t => t.toLowerCase() === syncedTag.toLowerCase());
-    return hasApproved && !hasSynced;
+    return entryTags.some(t => t.toLowerCase() === approvedTag.toLowerCase());
   });
 
-  if (entriesToSync.length === 0) {
+  if (approvedEntries.length === 0) {
     // Debug: show what tags were found in first few entries
     let debugInfo = '';
     if (allEntries.length > 0) {
@@ -1700,7 +1881,7 @@ function previewApprovedEntries() {
     }
 
     showAlert(
-      `No entries found with "${approvedTag}" tag (and without "${syncedTag}" tag) in the date range ${dateRange.startDate} to ${dateRange.endDate}.\n\n` +
+      `No entries found with "${approvedTag}" tag in the date range ${dateRange.startDate} to ${dateRange.endDate}.\n\n` +
       `Found ${allEntries.length} total entries in this date range.\n\n` +
       `To sync entries:\n` +
       `1. In Toggl Track, add the "${approvedTag}" tag to time entries you want to sync\n` +
@@ -1711,9 +1892,26 @@ function previewApprovedEntries() {
     return;
   }
 
+  const alreadySyncedMap = buildAlreadySyncedMap();
+  const entriesToSync = approvedEntries.filter(entry => {
+    const entryId = entry.id || entry.time_entry_id;
+    return !alreadySyncedMap.has(String(entryId));
+  });
+  const alreadySyncedCount = approvedEntries.length - entriesToSync.length;
+
+  if (entriesToSync.length === 0) {
+    showAlert(
+      `${approvedEntries.length} entries have the "${approvedTag}" tag, but all ${alreadySyncedCount} are already synced ` +
+      `(Sync_Log has a Success record for each). Nothing to sync.\n\n` +
+      `Date range: ${dateRange.startDate} to ${dateRange.endDate}`,
+      'No Entries to Sync'
+    );
+    return;
+  }
+
   // Build summary
   const togglLookups = buildTogglLookups();
-  let summary = `Found ${entriesToSync.length} entries to sync:\n\n`;
+  let summary = `${approvedEntries.length} approved, ${alreadySyncedCount} already synced, ${entriesToSync.length} will be written:\n\n`;
 
   const maxPreview = 10;
   entriesToSync.slice(0, maxPreview).forEach(entry => {
@@ -1906,7 +2104,15 @@ function syncApprovedEntriesWithState(existingState = null) {
   const approvedTag = getApprovedTagName();
   const syncedTag = getSyncedTagName();
 
-  let pendingEntryIds, syncedEntryIds, totalSynced, totalFailed;
+  // D2: rebuilt at sync start on BOTH a fresh start and every resume — a
+  // resume can follow the original fetch by 65+ minutes, cascading across
+  // multiple pauses, which is exactly the "separated by minutes" scenario
+  // D2 calls out. Overrides (D4) are intentionally NOT threaded through
+  // this path: they're a deliberate, immediate operator action, not
+  // something that should persist across a paused multi-hour operation.
+  const alreadySyncedMap = buildAlreadySyncedMap();
+
+  let pendingEntryIds, syncedEntryIds, totalSynced, totalFailed, totalAlreadySynced;
 
   if (existingState) {
     // Resume from saved state
@@ -1914,6 +2120,7 @@ function syncApprovedEntriesWithState(existingState = null) {
     syncedEntryIds = existingState.syncedEntryIds || [];
     totalSynced = existingState.totalSynced || 0;
     totalFailed = existingState.totalFailed || 0;
+    totalAlreadySynced = existingState.totalAlreadySynced || 0;
     logMessage(`Resuming with ${pendingEntryIds.length} pending entries`, 'INFO');
   } else {
     // Fresh sync - fetch entries
@@ -1924,25 +2131,34 @@ function syncApprovedEntriesWithState(existingState = null) {
 
     const allEntries = fetchTimeEntriesAllUsers(dateRange.startDate, dateRange.endDate);
 
+    // D1: Approved-tag alone — see syncApprovedEntries for why the Synced
+    // tag is no longer an exclusion filter here.
     const entriesToSync = allEntries.filter(entry => {
       const entryTags = resolveEntryTags(entry, tagLookup);
-      const hasApproved = entryTags.some(t => t.toLowerCase() === approvedTag.toLowerCase());
-      const hasSynced = entryTags.some(t => t.toLowerCase() === syncedTag.toLowerCase());
-      return hasApproved && !hasSynced;
+      return entryTags.some(t => t.toLowerCase() === approvedTag.toLowerCase());
     });
 
     pendingEntryIds = entriesToSync.map(e => e.id || e.time_entry_id);
     syncedEntryIds = [];
     totalSynced = 0;
     totalFailed = 0;
+    totalAlreadySynced = 0;
   }
 
+  // Untagged-so-far queue for THIS invocation only (D1a). Deliberately not
+  // part of persisted state: every return point below flushes it before
+  // returning, so nothing crosses a pause/resume boundary untagged.
+  const untaggedSyncedIds = [];
+
   if (pendingEntryIds.length === 0) {
-    // Nothing to sync, but may need to tag already-synced entries
+    // Nothing to sync, but may need to tag already-synced entries left over
+    // from a prior version of this function (defensive backstop for state
+    // saved before this fix shipped — new runs never leave syncedEntryIds
+    // untagged since every return path below flushes as it goes).
     if (syncedEntryIds.length > 0) {
       addTagToMultipleEntries(syncedEntryIds, syncedTag);
     }
-    return { completed: true, totalSynced, totalFailed };
+    return { completed: true, totalSynced, totalFailed, totalAlreadySynced };
   }
 
   // Build lookups (uses cache, minimal API calls)
@@ -1963,13 +2179,6 @@ function syncApprovedEntriesWithState(existingState = null) {
   const newPendingIds = [];
 
   for (const entryId of pendingEntryIds) {
-    // Check budget before processing
-    if (isApproachingApiLimit(5)) {  // Reserve some calls for cleanup
-      // Save remaining entries and schedule resume
-      newPendingIds.push(entryId);
-      continue;  // Keep adding to pending
-    }
-
     const entry = entryMap[entryId];
     if (!entry) {
       logMessage(`Entry ${entryId} not found in current fetch, skipping`, 'WARN');
@@ -1978,12 +2187,32 @@ function syncApprovedEntriesWithState(existingState = null) {
 
     try {
       const processed = processTimeEntry(entry, togglLookups);
+      const existing = alreadySyncedMap.get(String(processed.togglEntryId));
+
+      // D3: skip and report, never halt. Local check, no budget check needed.
+      if (existing) {
+        totalAlreadySynced++;
+        logSyncResult(processed, existing.qboId || '', 'Already synced', '');
+        continue;
+      }
+
+      // Check budget only for entries that will actually attempt a write.
+      if (isApproachingApiLimit(5)) {  // Reserve some calls for cleanup
+        newPendingIds.push(entryId);
+        continue;
+      }
+
       const syncResult = syncSingleEntry(processed, mappings);
 
       if (syncResult.success) {
         totalSynced++;
         syncedEntryIds.push(entryId);
+        untaggedSyncedIds.push(entryId);
+        alreadySyncedMap.set(String(processed.togglEntryId), { qboId: syncResult.qboId }); // D2: in-memory update
         logSyncResult(processed, syncResult.qboId, 'Success', '');
+
+        // D1(a): incremental flush, not just at the end.
+        maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, false);
       } else {
         totalFailed++;
         logSyncResult(processed, '', 'Failed', syncResult.error);
@@ -1997,21 +2226,26 @@ function syncApprovedEntriesWithState(existingState = null) {
     Utilities.sleep(250);
   }
 
-  // Add remaining pending entries to newPendingIds if we stopped due to budget
-  const processedCount = pendingEntryIds.length - newPendingIds.length;
-  for (let i = processedCount; i < pendingEntryIds.length; i++) {
-    if (!newPendingIds.includes(pendingEntryIds[i])) {
-      newPendingIds.push(pendingEntryIds[i]);
-    }
-  }
+  // newPendingIds is already complete and correct by construction: every
+  // entryId in pendingEntryIds hit exactly one path above — resolved
+  // (not-found / already-synced / success / failed, none of which push
+  // here) or explicitly deferred (budget, which does). The previous
+  // position-based backfill here assumed only a contiguous budget-deferred
+  // tail could be unresolved, which the D3 duplicate-skip path (a `continue`
+  // that isn't a budget defer) breaks whenever a duplicate lands after a
+  // budget cutoff — it would wrongly re-queue an already-resolved entry.
 
   if (newPendingIds.length > 0) {
+    // D1(a): tag before this pause-again path returns.
+    maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, true);
+
     // Save state and schedule resume
     const state = {
       pendingEntryIds: newPendingIds,
       syncedEntryIds,
       totalSynced,
       totalFailed,
+      totalAlreadySynced,
       pausedAt: formatDateTime(new Date())
     };
     saveSyncState(state);
@@ -2020,19 +2254,16 @@ function syncApprovedEntriesWithState(existingState = null) {
     const stats = getApiUsageStats();
     setConfigValue('LAST_SYNC_API_CALLS', stats.workspaceCalls);
 
-    return { completed: false, totalSynced, totalFailed, pending: newPendingIds.length };
+    return { completed: false, totalSynced, totalFailed, totalAlreadySynced, pending: newPendingIds.length };
   }
 
-  // All entries processed - add Synced tag
-  if (syncedEntryIds.length > 0) {
-    logMessage(`Adding "${syncedTag}" tag to ${syncedEntryIds.length} entries...`, 'INFO');
-    addTagToMultipleEntries(syncedEntryIds, syncedTag);
-  }
+  // All entries processed - flush any remaining untagged synced entries
+  maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, true);
 
   // Save API usage stats
   const stats = getApiUsageStats();
   setConfigValue('LAST_SYNC_API_CALLS', stats.workspaceCalls);
   setConfigValue('LAST_SYNC_DATE', formatDateTime(new Date()));
 
-  return { completed: true, totalSynced, totalFailed };
+  return { completed: true, totalSynced, totalFailed, totalAlreadySynced };
 }
