@@ -492,6 +492,12 @@ const Pages = {
 
       if (status.status === 'completed') {
         Toast.success(`Sync completed: ${status.synced} synced, ${status.failed} failed, ${status.alreadySynced} already synced`);
+        if (status.taggingFailed > 0) {
+          // QBO write already succeeded — this is a review-surface staleness
+          // warning, not a sync failure, but it must not be a silent WARN
+          // buried in a log no one reads (that's exactly how this bug hid).
+          Toast.error(`⚠ ${status.taggingFailed} entries synced but failed to tag "Synced" in Toggl — review view will be stale until retried.`);
+        }
         Pages.sync(); // Reload preview, clears the in-progress banner
         return;
       }

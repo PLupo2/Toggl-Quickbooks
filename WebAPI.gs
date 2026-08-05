@@ -453,6 +453,7 @@ function apiGetSyncJobStatus() {
     synced: meta.totalSynced || 0,
     failed: meta.totalFailed || 0,
     alreadySynced: meta.totalAlreadySynced || 0,
+    taggingFailed: meta.totalTaggingFailed || 0,
     error: meta.error || null,
     pending: pendingDetail ? {
       pendingEntries: pendingDetail.pendingEntryIds?.length || 0,

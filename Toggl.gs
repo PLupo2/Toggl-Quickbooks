@@ -445,12 +445,18 @@ function addTagToMultipleEntries(entryIds, tagName) {
       // Use bulk PATCH endpoint: /workspaces/{id}/time_entries/{id1,id2,id3,...}
       const endpoint = `/workspaces/${workspaceId}/time_entries/${idsString}`;
 
+      // The bulk (multi-ID) endpoint requires a JSON-Patch array body, unlike
+      // the single-entry PUT in addTagToTimeEntry below, which takes the
+      // plain {tags, tag_action} object. Confirmed against the live API
+      // 2026-08-05: the object form 400s here ("the payload should be an
+      // array") on every call; this array form succeeds. Do not "simplify"
+      // this back to the object form to match addTagToTimeEntry — they are
+      // different endpoints with different contracts.
       togglApiV9(endpoint, {
         method: 'patch',
-        payload: JSON.stringify({
-          tags: [tagName],
-          tag_action: 'add'
-        })
+        payload: JSON.stringify([
+          { op: 'add', path: '/tags', value: [tagName] }
+        ])
       });
 
       results.success += batch.length;
@@ -1448,6 +1454,8 @@ function syncApprovedEntries(options = {}) {
     synced: 0,
     failed: 0,
     alreadySynced: 0,
+    taggingFailed: 0,
+    taggingErrors: [],
     errors: [],
     syncedEntryIds: []
   };
@@ -1504,7 +1512,7 @@ function syncApprovedEntries(options = {}) {
         );
 
         // D1(a): incremental tag flush — don't wait for the whole run to finish.
-        maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, false);
+        recordTagFlush(results, maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, false));
       } else {
         results.failed++;
         results.errors.push({ entryId: processed.togglEntryId, error: syncResult.error });
@@ -1530,7 +1538,7 @@ function syncApprovedEntries(options = {}) {
   if (pendingEntryIds.length > 0) {
     // D1(a): tag before this path returns — this used to be the exact gap
     // that let a paused run leave real syncs untagged indefinitely.
-    maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, true);
+    recordTagFlush(results, maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, true));
 
     const state = {
       pendingEntryIds,
@@ -1538,6 +1546,7 @@ function syncApprovedEntries(options = {}) {
       totalSynced: results.synced,
       totalFailed: results.failed,
       totalAlreadySynced: results.alreadySynced,
+      totalTaggingFailed: results.taggingFailed,
       pausedAt: formatDateTime(new Date())
     };
     saveSyncState(state);
@@ -1549,8 +1558,9 @@ function syncApprovedEntries(options = {}) {
     const message = `Sync paused: ${results.synced} synced, ${results.failed} failed, ` +
       `${results.alreadySynced} already synced, ${pendingEntryIds.length} pending.\n\n` +
       `Will auto-resume in ~65 minutes when rate limit resets.\n` +
-      `API calls used: ${stats.workspaceCalls}`;
-    logMessage(message, 'INFO');
+      `API calls used: ${stats.workspaceCalls}` +
+      (results.taggingFailed > 0 ? `\n\n⚠ ${results.taggingFailed} entries synced successfully but FAILED to tag "${syncedTag}" — Toggl's review view will be stale for these until retried.` : '');
+    logMessage(message, results.taggingFailed > 0 ? 'WARN' : 'INFO');
     if (!options.fromWebApi) {
       showAlert(message, 'Sync Paused');
     }
@@ -1559,7 +1569,7 @@ function syncApprovedEntries(options = {}) {
   }
 
   // All entries processed - flush any remaining untagged synced entries
-  maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, true);
+  recordTagFlush(results, maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, true));
 
   // Save API usage stats
   const stats = getApiUsageStats();
@@ -1568,8 +1578,9 @@ function syncApprovedEntries(options = {}) {
 
   const message = `Sync complete: ${results.synced} synced, ${results.failed} failed, ` +
     `${results.alreadySynced} already synced\n` +
-    `API calls used: ${stats.workspaceCalls} / ${stats.budget}`;
-  logMessage(message, 'INFO');
+    `API calls used: ${stats.workspaceCalls} / ${stats.budget}` +
+    (results.taggingFailed > 0 ? `\n\n⚠ ${results.taggingFailed} entries synced successfully but FAILED to tag "${syncedTag}" — Toggl's review view will be stale for these until retried.` : '');
+  logMessage(message, results.taggingFailed > 0 ? 'WARN' : 'INFO');
   if (!options.fromWebApi) {
     showAlert(message, 'Sync Complete');
   }
@@ -1706,6 +1717,18 @@ function parseForceEntryIds(raw) {
 }
 
 /**
+ * Accumulates a maybeFlushSyncedTags() outcome onto a run's results object
+ * (which must have taggingFailed/taggingErrors fields). A tagging failure
+ * used to end at a WARN log inside addTagToMultipleEntries and go no
+ * further — this is what makes it reach the run summary instead.
+ */
+function recordTagFlush(results, flushResult) {
+  if (!flushResult || !flushResult.failed) return;
+  results.taggingFailed += flushResult.failed;
+  results.taggingErrors.push(...flushResult.errors);
+}
+
+/**
  * D1(a): tagging must be reliable now that it's informational-only — a
  * missed tag can no longer cause a double-write, but it can mislead Philip's
  * review. Flushes the queue via the 100-id bulk endpoint either once it's
@@ -1715,15 +1738,22 @@ function parseForceEntryIds(raw) {
  * @param {Array<string|number>} untaggedIds - synced-but-not-yet-tagged Toggl Entry IDs, mutated in place
  * @param {string} syncedTag
  * @param {boolean} force - flush even if under 100
+ * @returns {{attempted: number, failed: number, errors: Array}|null} null if
+ *   nothing was flushed (below threshold and not forced); otherwise the
+ *   outcome, so a tagging failure can be surfaced above a WARN log instead
+ *   of silently swallowed — see addTagToMultipleEntries's own try/catch,
+ *   which is what let this go unnoticed for the system's entire history.
  */
 function maybeFlushSyncedTags(untaggedIds, syncedTag, force) {
-  if (untaggedIds.length === 0) return;
-  if (!force && untaggedIds.length < 100) return;
+  if (untaggedIds.length === 0) return null;
+  if (!force && untaggedIds.length < 100) return null;
 
   const batch = untaggedIds.splice(0, untaggedIds.length);
   logMessage(`Tagging ${batch.length} entries with "${syncedTag}"...`, 'INFO');
   const tagResults = addTagToMultipleEntries(batch, syncedTag);
   logMessage(`Tagged ${tagResults.success} entries with ${tagResults.apiCalls} API calls`, 'INFO');
+
+  return { attempted: batch.length, failed: tagResults.failed, errors: tagResults.errors };
 }
 
 /**
@@ -2071,7 +2101,8 @@ function resumePendingSync() {
           completedAt: formatDateTime(new Date()),
           totalSynced: result.totalSynced,
           totalFailed: result.totalFailed,
-          totalAlreadySynced: result.totalAlreadySynced
+          totalAlreadySynced: result.totalAlreadySynced,
+          totalTaggingFailed: result.totalTaggingFailed || 0
         });
       }
 
@@ -2079,7 +2110,8 @@ function resumePendingSync() {
         `Sync resumed and completed!\n\n` +
         `Total synced: ${result.totalSynced}\n` +
         `Failed: ${result.totalFailed}\n` +
-        `API calls used: ${API_COUNTER.workspaceCalls}`,
+        `API calls used: ${API_COUNTER.workspaceCalls}` +
+        (result.totalTaggingFailed > 0 ? `\n\n⚠ ${result.totalTaggingFailed} entries synced but FAILED to tag — Toggl's review view will be stale for these until retried.` : ''),
         'Sync Complete'
       );
     }
@@ -2204,6 +2236,7 @@ function startAsyncSyncJob(options = {}) {
       totalSynced: 0,
       totalFailed: 0,
       totalAlreadySynced: 0,
+      totalTaggingFailed: 0,
       error: null,
       // Script Properties are strings — a plain array survives the JSON round-trip fine.
       forceEntryIds: Array.from(parseForceEntryIds(options.forceEntryIds))
@@ -2255,7 +2288,8 @@ function runScheduledSyncJob() {
       // carries the job-meta update forward to completion from here.
       saveSyncJobMeta({
         ...meta, status: 'paused',
-        totalSynced: result.synced, totalFailed: result.failed, totalAlreadySynced: result.alreadySynced
+        totalSynced: result.synced, totalFailed: result.failed, totalAlreadySynced: result.alreadySynced,
+        totalTaggingFailed: result.taggingFailed || 0
       });
       logMessage(`Async sync job ${meta.jobId} paused (rate limit) — will resume automatically`, 'INFO');
     } else {
@@ -2265,9 +2299,11 @@ function runScheduledSyncJob() {
         completedAt: formatDateTime(new Date()),
         totalSynced: result.synced,
         totalFailed: result.failed,
-        totalAlreadySynced: result.alreadySynced
+        totalAlreadySynced: result.alreadySynced,
+        totalTaggingFailed: result.taggingFailed || 0
       });
-      logMessage(`Async sync job ${meta.jobId} completed: ${result.synced} synced, ${result.failed} failed, ${result.alreadySynced} already synced`, 'INFO');
+      logMessage(`Async sync job ${meta.jobId} completed: ${result.synced} synced, ${result.failed} failed, ${result.alreadySynced} already synced` +
+        (result.taggingFailed > 0 ? `, ⚠ ${result.taggingFailed} tagging failures` : ''), 'INFO');
     }
   } catch (error) {
     logMessage(`Async sync job ${meta.jobId} failed: ${error.message}`, 'ERROR');
@@ -2292,7 +2328,8 @@ function syncApprovedEntriesWithState(existingState = null) {
   // something that should persist across a paused multi-hour operation.
   const alreadySyncedMap = buildAlreadySyncedMap();
 
-  let pendingEntryIds, syncedEntryIds, totalSynced, totalFailed, totalAlreadySynced;
+  let pendingEntryIds, syncedEntryIds, totalSynced, totalFailed, totalAlreadySynced, totalTaggingFailed;
+  const taggingErrors = [];
 
   if (existingState) {
     // Resume from saved state
@@ -2301,6 +2338,7 @@ function syncApprovedEntriesWithState(existingState = null) {
     totalSynced = existingState.totalSynced || 0;
     totalFailed = existingState.totalFailed || 0;
     totalAlreadySynced = existingState.totalAlreadySynced || 0;
+    totalTaggingFailed = existingState.totalTaggingFailed || 0;
     logMessage(`Resuming with ${pendingEntryIds.length} pending entries`, 'INFO');
   } else {
     // Fresh sync - fetch entries
@@ -2323,6 +2361,7 @@ function syncApprovedEntriesWithState(existingState = null) {
     totalSynced = 0;
     totalFailed = 0;
     totalAlreadySynced = 0;
+    totalTaggingFailed = 0;
   }
 
   // Untagged-so-far queue for THIS invocation only (D1a). Deliberately not
@@ -2338,7 +2377,7 @@ function syncApprovedEntriesWithState(existingState = null) {
     if (syncedEntryIds.length > 0) {
       addTagToMultipleEntries(syncedEntryIds, syncedTag);
     }
-    return { completed: true, totalSynced, totalFailed, totalAlreadySynced };
+    return { completed: true, totalSynced, totalFailed, totalAlreadySynced, totalTaggingFailed, taggingErrors };
   }
 
   // Build lookups (uses cache, minimal API calls)
@@ -2392,7 +2431,11 @@ function syncApprovedEntriesWithState(existingState = null) {
         logSyncResult(processed, syncResult.qboId, 'Success', '');
 
         // D1(a): incremental flush, not just at the end.
-        maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, false);
+        const flush1 = maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, false);
+        if (flush1 && flush1.failed) {
+          totalTaggingFailed += flush1.failed;
+          taggingErrors.push(...flush1.errors);
+        }
       } else {
         totalFailed++;
         logSyncResult(processed, '', 'Failed', syncResult.error);
@@ -2417,7 +2460,11 @@ function syncApprovedEntriesWithState(existingState = null) {
 
   if (newPendingIds.length > 0) {
     // D1(a): tag before this pause-again path returns.
-    maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, true);
+    const flush2 = maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, true);
+    if (flush2 && flush2.failed) {
+      totalTaggingFailed += flush2.failed;
+      taggingErrors.push(...flush2.errors);
+    }
 
     // Save state and schedule resume
     const state = {
@@ -2426,6 +2473,7 @@ function syncApprovedEntriesWithState(existingState = null) {
       totalSynced,
       totalFailed,
       totalAlreadySynced,
+      totalTaggingFailed,
       pausedAt: formatDateTime(new Date())
     };
     saveSyncState(state);
@@ -2434,16 +2482,28 @@ function syncApprovedEntriesWithState(existingState = null) {
     const stats = getApiUsageStats();
     setConfigValue('LAST_SYNC_API_CALLS', stats.workspaceCalls);
 
-    return { completed: false, totalSynced, totalFailed, totalAlreadySynced, pending: newPendingIds.length };
+    if (totalTaggingFailed > 0) {
+      logMessage(`⚠ ${totalTaggingFailed} entries synced but failed to tag "${syncedTag}" this resume cycle`, 'WARN');
+    }
+
+    return { completed: false, totalSynced, totalFailed, totalAlreadySynced, totalTaggingFailed, taggingErrors, pending: newPendingIds.length };
   }
 
   // All entries processed - flush any remaining untagged synced entries
-  maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, true);
+  const flush3 = maybeFlushSyncedTags(untaggedSyncedIds, syncedTag, true);
+  if (flush3 && flush3.failed) {
+    totalTaggingFailed += flush3.failed;
+    taggingErrors.push(...flush3.errors);
+  }
 
   // Save API usage stats
   const stats = getApiUsageStats();
   setConfigValue('LAST_SYNC_API_CALLS', stats.workspaceCalls);
   setConfigValue('LAST_SYNC_DATE', formatDateTime(new Date()));
 
-  return { completed: true, totalSynced, totalFailed, totalAlreadySynced };
+  if (totalTaggingFailed > 0) {
+    logMessage(`⚠ ${totalTaggingFailed} entries synced but failed to tag "${syncedTag}"`, 'WARN');
+  }
+
+  return { completed: true, totalSynced, totalFailed, totalAlreadySynced, totalTaggingFailed, taggingErrors };
 }
