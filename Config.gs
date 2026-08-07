@@ -199,6 +199,41 @@ function getOAuthRedirectUri() {
   return getScriptProperty('OAUTH_REDIRECT_URI');
 }
 
+/**
+ * Gets the Back Office bulk mappings endpoint URL (D2 cutover — see
+ * buildMappingLookups in Mappings.gs)
+ * @returns {string} Endpoint URL
+ */
+function getBackOfficeMappingsUrl() {
+  return getScriptProperty('BACK_OFFICE_MAPPINGS_URL', 'https://backoffice.pltheatrical.com/api/mappings/all');
+}
+
+/**
+ * Gets the Cloudflare Access service token client ID for the Back Office
+ * mappings endpoint (CF-Access-Client-Id header)
+ * @returns {string|null} Client ID
+ */
+function getBackOfficeCfAccessClientId() {
+  return getScriptProperty('BACK_OFFICE_CF_ACCESS_CLIENT_ID');
+}
+
+/**
+ * Gets the Cloudflare Access service token client secret for the Back
+ * Office mappings endpoint (CF-Access-Client-Secret header)
+ * @returns {string|null} Client secret
+ */
+function getBackOfficeCfAccessClientSecret() {
+  return getScriptProperty('BACK_OFFICE_CF_ACCESS_CLIENT_SECRET');
+}
+
+/**
+ * Gets the Back Office TimeSync service API key (X-Api-Key header)
+ * @returns {string|null} API key
+ */
+function getBackOfficeApiKey() {
+  return getScriptProperty('BACK_OFFICE_API_KEY');
+}
+
 // ============================================================================
 // CONFIG SHEET HELPERS
 // ============================================================================

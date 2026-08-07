@@ -1599,12 +1599,17 @@ function syncApprovedEntries(options = {}) {
 }
 
 /**
- * Syncs a single processed entry to QBO
+ * Resolves QBO mapping lookups into TimeActivity fields for a processed
+ * entry, or a validation error — the actual per-entry resolution logic
+ * used by production sync. Factored out of syncSingleEntry so the D2
+ * cutover dry-run comparison (dryRunCompareMappingSources in Mappings.gs)
+ * exercises this exact code path against both mapping sources, instead of
+ * a separate reimplementation that could silently drift from it.
  * @param {Object} entry - Processed time entry
  * @param {Object} mappings - QBO mapping lookups
- * @returns {Object} Result with success status and qboId or error
+ * @returns {{success: true, timeData: Object}|{success: false, error: string}}
  */
-function syncSingleEntry(entry, mappings) {
+function resolveSyncMappings(entry, mappings) {
   // Resolve QBO mappings
   const qboEmployee = mappings.users[entry.togglUserId];
   const qboProject = mappings.projects[entry.togglProjectId];
@@ -1647,20 +1652,36 @@ function syncSingleEntry(entry, mappings) {
 
   // Build time data for QBO
   // Note: If projectId is set (sub-customer), it takes precedence in createTimeActivity
-  const timeData = {
-    togglEntryId: entry.togglEntryId,
-    employeeId: qboEmployee.qboEmployeeId,
-    customerId: customerId,            // Top-level customer from Mappings_Clients
-    projectId: projectId,              // Sub-customer from Mappings_Projects (optional)
-    serviceItemId: serviceItemId,
-    date: entry.date,
-    hours: entry.durationSeconds / 3600,  // Convert seconds to hours
-    description: `${entry.togglUser}: ${entry.description || ''}`.trim(),
-    billable: entry.billable
+  return {
+    success: true,
+    timeData: {
+      togglEntryId: entry.togglEntryId,
+      employeeId: qboEmployee.qboEmployeeId,
+      customerId: customerId,            // Top-level customer from Mappings_Clients
+      projectId: projectId,              // Sub-customer from Mappings_Projects (optional)
+      serviceItemId: serviceItemId,
+      date: entry.date,
+      hours: entry.durationSeconds / 3600,  // Convert seconds to hours
+      description: `${entry.togglUser}: ${entry.description || ''}`.trim(),
+      billable: entry.billable
+    }
   };
+}
+
+/**
+ * Syncs a single processed entry to QBO
+ * @param {Object} entry - Processed time entry
+ * @param {Object} mappings - QBO mapping lookups
+ * @returns {Object} Result with success status and qboId or error
+ */
+function syncSingleEntry(entry, mappings) {
+  const resolved = resolveSyncMappings(entry, mappings);
+  if (!resolved.success) {
+    return resolved;
+  }
 
   try {
-    const activity = createTimeActivity(timeData);
+    const activity = createTimeActivity(resolved.timeData);
     return { success: true, qboId: activity.Id };
   } catch (error) {
     return { success: false, error: error.message };

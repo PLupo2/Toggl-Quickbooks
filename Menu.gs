@@ -76,6 +76,9 @@ function createMenu() {
         .addSeparator()
         .addItem('Apply Mapping Highlights', 'applyUnmappedRowHighlighting')
         .addItem('Sync Missing Config Keys', 'syncMissingConfigKeys')
+        .addSeparator()
+        .addItem('D2: Run Dry Run Comparison', 'runD2DryRunComparison')
+        .addItem('D2: Rename Old Mapping Tabs', 'runD2RenameOldMappingTabs')
     )
 
     .addSeparator()

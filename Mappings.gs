@@ -766,10 +766,126 @@ function wireTaskMappingDropdowns() {
 // ============================================================================
 
 /**
- * Builds complete mapping lookup tables from all mapping sheets
+ * D2 cutover (spec doc Phase 6, Q5/Q8): fetches the complete mapping lookup
+ * tables from Back Office in ONE bulk call per run, held in memory for the
+ * run rather than looked up per-entry — Apps Script execution limits, and a
+ * consistent snapshot so mappings can't change mid-run. GET only; TimeSync
+ * must remain structurally unable to write to Back Office.
+ *
+ * ON FAILURE, ABORTS THE RUN. No partial run, no stale data, no
+ * last-known-good cache — proceeding on stale mappings writes TimeActivity
+ * records against the wrong QBO customers (money wrong, found at
+ * invoicing). A delayed run is recoverable: entries keep their Approved tag
+ * and sync next run. See abortRunForMappingFetchFailure.
+ *
+ * Requires three Script Properties: BACK_OFFICE_CF_ACCESS_CLIENT_ID,
+ * BACK_OFFICE_CF_ACCESS_CLIENT_SECRET (Cloudflare Access service token for
+ * the path-scoped /api/mappings/all Access app), and BACK_OFFICE_API_KEY
+ * (Back Office's second auth layer). BACK_OFFICE_MAPPINGS_URL is optional,
+ * defaulting to the production endpoint.
+ *
+ * Superseded the old sheet-reading implementation, kept as
+ * buildMappingLookupsFromSheets() for the one-time D2 dry-run comparison
+ * (dryRunCompareMappingSources) — do not call it from production code paths.
  * @returns {Object} Mappings object with users, clients, projects, tasks
  */
 function buildMappingLookups() {
+  const url = getBackOfficeMappingsUrl();
+  const cfClientId = getBackOfficeCfAccessClientId();
+  const cfClientSecret = getBackOfficeCfAccessClientSecret();
+  const apiKey = getBackOfficeApiKey();
+
+  if (!cfClientId || !cfClientSecret || !apiKey) {
+    return abortRunForMappingFetchFailure(
+      'Back Office credentials not configured — set BACK_OFFICE_CF_ACCESS_CLIENT_ID, ' +
+      'BACK_OFFICE_CF_ACCESS_CLIENT_SECRET, and BACK_OFFICE_API_KEY in Script Properties'
+    );
+  }
+
+  const options = {
+    method: 'get',
+    headers: {
+      'CF-Access-Client-Id': cfClientId,
+      'CF-Access-Client-Secret': cfClientSecret,
+      'X-Api-Key': apiKey
+    },
+    muteHttpExceptions: true
+  };
+
+  let response;
+  try {
+    response = UrlFetchApp.fetch(url, options);
+  } catch (e) {
+    return abortRunForMappingFetchFailure(`Back Office mapping fetch threw: ${e.message}`);
+  }
+
+  const responseCode = response.getResponseCode();
+  if (responseCode !== 200) {
+    return abortRunForMappingFetchFailure(
+      `Back Office mapping fetch returned ${responseCode}: ${response.getContentText().slice(0, 300)}`
+    );
+  }
+
+  let mappings;
+  try {
+    mappings = JSON.parse(response.getContentText());
+  } catch (e) {
+    return abortRunForMappingFetchFailure(`Back Office mapping response was not valid JSON: ${e.message}`);
+  }
+
+  if (!mappings || !mappings.users || !mappings.clients || !mappings.projects || !mappings.tasks) {
+    return abortRunForMappingFetchFailure('Back Office mapping response missing an expected key (users/clients/projects/tasks)');
+  }
+
+  logMessage(
+    `Mapping lookups fetched from Back Office: ${Object.keys(mappings.users).length} users, ` +
+    `${Object.keys(mappings.clients).length} clients, ${Object.keys(mappings.projects).length} projects, ` +
+    `${Object.keys(mappings.tasks).length} tasks`,
+    'INFO'
+  );
+
+  return mappings;
+}
+
+/**
+ * D2 cutover: mapping fetch failures abort the run rather than falling
+ * back to a cache or partial data (see buildMappingLookups). Emails Philip
+ * directly rather than raising a Back Office notification — TimeSync is
+ * GET-only against Back Office by design, so it has no write path to raise
+ * one through, and widening the service key to add one would undercut the
+ * whole point of D1's key scoping.
+ * @param {string} reason
+ * @returns {never} always throws
+ */
+function abortRunForMappingFetchFailure(reason) {
+  logMessage(`ABORTING sync: mapping fetch failed — ${reason}`, 'ERROR');
+  try {
+    MailApp.sendEmail({
+      to: 'philip@pltheatrical.com',
+      subject: 'TimeSync: sync aborted — Back Office mapping fetch failed',
+      body: `The Toggl -> QBO sync aborted before writing anything.\n\n` +
+            `Reason: ${reason}\n\n` +
+            `No mappings were cached or reused — proceeding on stale data risks writing ` +
+            `TimeActivity records against the wrong QBO customers. Approved entries keep their ` +
+            `tag and will sync on the next run once this is fixed.\n\n` +
+            `Time: ${formatDateTime(new Date())}`
+    });
+  } catch (mailError) {
+    logMessage(`Also failed to send abort email: ${mailError.message}`, 'ERROR');
+  }
+  throw new Error(`Sync aborted: ${reason}`);
+}
+
+/**
+ * Pre-D2 implementation, reading the four Mappings_ sheet tabs directly.
+ * Kept ONLY for the one-time dryRunCompareMappingSources() verification
+ * against the new Back Office endpoint — not called from any production
+ * sync path. Stops working once renameOldMappingTabsToZZOld() runs, since
+ * it looks sheets up by their pre-rename names; that's expected, it's a
+ * cutover-verification tool, not a fallback.
+ * @returns {Object} Mappings object with users, clients, projects, tasks
+ */
+function buildMappingLookupsFromSheets() {
   const ss = getSpreadsheet();
   const mappings = {
     users: {},      // togglUserId -> { qboEmployeeId, qboEmployeeName }
@@ -839,8 +955,169 @@ function buildMappingLookups() {
   return mappings;
 }
 
+// ============================================================================
+// D2 CUTOVER — DRY RUN VERIFICATION AND TAB RENAME
+// ============================================================================
+
 /**
- * Resolves QBO mappings for a time entry
+ * D2 cutover, step before flipping: resolves every currently-Approved entry
+ * through the SAME resolution logic syncSingleEntry uses (resolveSyncMappings)
+ * against both mapping sources — the old sheets and the new Back Office
+ * endpoint — and reports any divergence. Deliberately does not use
+ * resolveMappingsForEntry (a dead, always-empty stub with no callers) —
+ * that would validate nothing.
+ *
+ * Read-only: does not call createTimeActivity, does not tag anything, does
+ * not rename any tabs. Zero divergence is required before proceeding to
+ * renameOldMappingTabsToZZOld() — see spec doc Phase 6 D2.
+ * @returns {{entryCount: number, matchCount: number, divergences: Array}}
+ */
+function dryRunCompareMappingSources() {
+  const approvedTag = getApprovedTagName();
+  const dateRange = getImportDateRange();
+
+  const tags = fetchTogglTags();
+  const tagLookup = {};
+  tags.forEach(t => { tagLookup[t.id] = t.name; });
+
+  const allEntries = fetchTimeEntriesAllUsers(dateRange.startDate, dateRange.endDate);
+  const entriesToSync = allEntries.filter(entry => {
+    const entryTags = resolveEntryTags(entry, tagLookup);
+    return entryTags.some(t => t.toLowerCase() === approvedTag.toLowerCase());
+  });
+
+  logMessage(
+    `D2 dry run: comparing ${entriesToSync.length} Approved entries — sheet mappings vs Back Office mappings`,
+    'INFO'
+  );
+
+  const togglLookups = buildTogglLookups({ useSheetForTasks: true });
+  const sheetMappings = buildMappingLookupsFromSheets();
+  const endpointMappings = buildMappingLookups(); // aborts + emails on failure, by design — see buildMappingLookups
+
+  const divergences = [];
+  entriesToSync.forEach(entry => {
+    const processed = processTimeEntry(entry, togglLookups);
+    const fromSheet = resolveSyncMappings(processed, sheetMappings);
+    const fromEndpoint = resolveSyncMappings(processed, endpointMappings);
+
+    if (JSON.stringify(fromSheet) !== JSON.stringify(fromEndpoint)) {
+      divergences.push({ togglEntryId: processed.togglEntryId, fromSheet, fromEndpoint });
+    }
+  });
+
+  const result = {
+    entryCount: entriesToSync.length,
+    matchCount: entriesToSync.length - divergences.length,
+    divergences
+  };
+
+  logMessage(
+    `D2 dry run result: ${result.matchCount}/${result.entryCount} match, ${divergences.length} divergence(s)`,
+    divergences.length ? 'ERROR' : 'INFO'
+  );
+
+  return result;
+}
+
+/**
+ * Menu-facing wrapper for dryRunCompareMappingSources() — reports the
+ * result as an alert so it can be run and read from the Sheet UI without
+ * opening the Apps Script editor.
+ */
+function runD2DryRunComparison() {
+  showToast('Running D2 dry run comparison...');
+  try {
+    const result = dryRunCompareMappingSources();
+    let summary = `${result.entryCount} Approved entries compared.\n` +
+                  `${result.matchCount} matched, ${result.divergences.length} diverged.\n\n`;
+    if (result.divergences.length === 0) {
+      summary += 'Zero divergence — safe to proceed with renameOldMappingTabsToZZOld() to complete the cutover.';
+    } else {
+      summary += 'DO NOT PROCEED. Divergent entries (first 10):\n';
+      result.divergences.slice(0, 10).forEach(d => {
+        summary += `\n• Entry ${d.togglEntryId}:\n  sheet: ${JSON.stringify(d.fromSheet)}\n  endpoint: ${JSON.stringify(d.fromEndpoint)}\n`;
+      });
+    }
+    showAlert(summary, 'D2 Dry Run Result');
+  } catch (error) {
+    showAlert(`Dry run failed: ${error.message}`, 'D2 Dry Run Error');
+  }
+}
+
+/**
+ * D2 cutover, final step — run only after dryRunCompareMappingSources()
+ * reports zero divergence and buildMappingLookups() is confirmed reading
+ * from Back Office in production. Renames the four mapping tabs with a
+ * ZZ_OLD_ prefix rather than deleting them: nothing points at them once
+ * buildMappingLookups reads from Back Office, so this just stops them
+ * reading as current — the fallback if the endpoint is ever distrusted
+ * stays the original sheet data, not a fresh export.
+ * @returns {{renamed: string[], skipped: string[]}}
+ */
+function renameOldMappingTabsToZZOld() {
+  const ss = getSpreadsheet();
+  const tabNames = [
+    CONFIG.SHEETS.MAPPINGS_CLIENTS,
+    CONFIG.SHEETS.MAPPINGS_PROJECTS,
+    CONFIG.SHEETS.MAPPINGS_USERS,
+    CONFIG.SHEETS.MAPPINGS_TASKS
+  ];
+
+  const renamed = [];
+  const skipped = [];
+
+  tabNames.forEach(name => {
+    const sheet = ss.getSheetByName(name);
+    if (!sheet) {
+      skipped.push(`${name} (not found)`);
+      return;
+    }
+    const newName = `ZZ_OLD_${name}`;
+    if (ss.getSheetByName(newName)) {
+      skipped.push(`${name} (${newName} already exists)`);
+      return;
+    }
+    sheet.setName(newName);
+    renamed.push(`${name} -> ${newName}`);
+  });
+
+  logMessage(
+    `D2 tab rename: ${renamed.join(', ') || 'none'}${skipped.length ? '; skipped: ' + skipped.join(', ') : ''}`,
+    'INFO'
+  );
+
+  return { renamed, skipped };
+}
+
+/**
+ * Menu-facing wrapper for renameOldMappingTabsToZZOld() with a confirmation
+ * prompt — this is a one-way cutover step, not something to trigger by
+ * accident.
+ */
+function runD2RenameOldMappingTabs() {
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert(
+    'Rename Old Mapping Tabs (D2 Cutover)',
+    'This renames Mappings_Clients, Mappings_Projects, Mappings_Users, and Mappings_Tasks_Services ' +
+    'with a ZZ_OLD_ prefix. Only run this after the D2 dry run comparison reports zero divergence ' +
+    'and the Back Office mapping fetch is confirmed live. Continue?',
+    ui.ButtonSet.YES_NO
+  );
+  if (response !== ui.Button.YES) return;
+
+  const result = renameOldMappingTabsToZZOld();
+  showAlert(
+    `Renamed: ${result.renamed.join('\n') || '(none)'}\n\nSkipped: ${result.skipped.join('\n') || '(none)'}`,
+    'D2 Tab Rename Complete'
+  );
+}
+
+/**
+ * DEAD STUB — always returns an empty result and has no callers. Left in
+ * place only as a landmine warning: do NOT use this for the D2 dry-run
+ * comparison (see dryRunCompareMappingSources, which uses the real
+ * resolution logic from syncSingleEntry instead).
  * @param {Object} entry - Inbox entry row data
  * @param {Object} mappings - Mapping lookups
  * @returns {Object} Resolved mappings with validation errors
