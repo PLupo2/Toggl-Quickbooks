@@ -116,7 +116,7 @@ No automated tests. Manual test cases documented in docs/TEST_CASES.md.
 - L3 for OAuth flow changes or web UI architecture changes
 - Opus for changes touching both Apps Script and web UI simultaneously
 
-TimeSync is actively used in production. Until Phase 1.5.4 (cutover validation) is complete, this repo on the Mac Mini is a clone — the MacBook Claude Code workflow remains the primary development path. Do not clasp push from the Mac Mini until cutover is explicitly authorized.
+TimeSync is actively used in production, so changes are deliberate and verified before deploy. THE MAC MINI IS THE PRIMARY AND ONLY DEVELOPMENT PATH for this repo, as it is for every other project. The MacBook is a LAST RESORT ONLY — use it solely when a task is physically impossible on the Mini (e.g. an Xcode iOS build). Earlier guidance naming the MacBook as the primary path for TimeSync was wrong and is removed (corrected 2026-08-07, Philip). clasp push from the Mac Mini is permitted. NOTE: clasp auth on the Mini currently fails with invalid_grant / invalid_rapt and needs an interactive `clasp login` from Philip before a push will succeed — that is a broken credential, not a policy restriction.
 
 ## CURRENT STATE
 
