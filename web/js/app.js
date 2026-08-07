@@ -176,7 +176,6 @@ const Pages = {
     content.innerHTML = `
       <div class="card" id="dash-connection">${Pages._sectionLoading()}</div>
       <div class="card" id="dash-sync-status">${Pages._sectionLoading()}</div>
-      <div class="card" id="dash-mappings">${Pages._sectionLoading()}</div>
       <div class="card" id="dash-disagreement">${Pages._sectionLoading()}</div>`;
 
     Pages._loadConnectionStatus(_rt);
@@ -233,7 +232,6 @@ const Pages = {
   // persisted snapshot from the last sync run, not computed live here.
   async _loadDashboardData(_rt) {
     const elSync = document.getElementById('dash-sync-status');
-    const elMappings = document.getElementById('dash-mappings');
     const elDisagreement = document.getElementById('dash-disagreement');
 
     try {
@@ -241,13 +239,11 @@ const Pages = {
       if (Pages._stale(_rt)) return;
 
       if (elSync) elSync.innerHTML = Pages._renderSyncStatusCard(data);
-      if (elMappings) elMappings.innerHTML = Pages._renderMappingsCard(data);
       if (elDisagreement) elDisagreement.innerHTML = Pages._renderDisagreementCard(data.tags.disagreement);
     } catch (err) {
       if (Pages._stale(_rt)) return;
       const retry = "Pages._loadDashboardData(App.renderToken)";
       if (elSync) elSync.innerHTML = Pages._sectionError('Sync Status', err, retry);
-      if (elMappings) elMappings.innerHTML = Pages._sectionError('Mapping Completeness', err, retry);
       if (elDisagreement) elDisagreement.innerHTML = Pages._sectionError('Tag/Log Disagreement', err, retry);
     }
   },
@@ -281,22 +277,6 @@ const Pages = {
           <div class="stat-detail">${data.api.lastSyncCalls ? 'Last sync used ' + data.api.lastSyncCalls + ' of ' + data.api.budget + ' calls/hr' : 'No sync data yet'}</div>
         </div>
       </div>`;
-  },
-
-  _renderMappingsCard(data) {
-    const mappingCards = Object.entries(data.mappings).map(([key, m]) => {
-      const pct = m.total > 0 ? Math.round((m.mapped / m.total) * 100) : 0;
-      const barClass = pct === 100 ? 'progress-bar-success' : pct >= 50 ? 'progress-bar-warning' : 'progress-bar-danger';
-      return `
-        <div class="stat">
-          <div class="stat-label">${key.charAt(0).toUpperCase() + key.slice(1)}</div>
-          <div class="stat-value">${m.mapped}/${m.total}</div>
-          <div class="progress"><div class="progress-bar ${barClass}" style="width:${pct}%"></div></div>
-          <div class="stat-detail">${m.unmapped > 0 ? `${m.unmapped} unmapped` : 'All mapped'}</div>
-        </div>`;
-    }).join('');
-
-    return `<div class="card-title">Mapping Completeness</div><div class="stats-grid">${mappingCards}</div>`;
   },
 
   // D1(b) dashboard card. The count is a snapshot computed during the last
@@ -766,237 +746,25 @@ const Pages = {
   },
 
   // ---------------------------------------------------------------------------
-  // Mappings — Split into sections with dropdown selectors
+  // Mappings — retired from this dashboard (Phase 6 Q6). Back Office's
+  // Mappings section is now the sole editing surface; keeping a second
+  // editor here writing to the ZZ_OLD_ sheets would recreate the two-homes
+  // problem this phase exists to end. Nav entry kept (not deleted) so
+  // anyone who goes looking for it finds a pointer, not a dead end.
   // ---------------------------------------------------------------------------
-  _mappingTab: 'Mappings_Users',
-  _qboOptions: null,
-  _archivedExpanded: false,
-  _projectPendingCache: {},
-
   async mappings() {
-    const _rt = App.renderToken;
     const content = document.getElementById('content');
-    const tabs = [
-      { key: 'Mappings_Users', label: 'Users', qboType: 'employees', qboIdCol: 'QBO Employee ID', qboNameCol: 'QBO Employee Name' },
-      { key: 'Mappings_Clients', label: 'Clients', qboType: 'customers', qboIdCol: 'QBO Customer ID', qboNameCol: 'QBO Customer Name' },
-      { key: 'Mappings_Projects', label: 'Projects', qboType: 'projects', qboIdCol: 'QBO Project ID', qboNameCol: 'QBO Project Name' },
-      { key: 'Mappings_Tasks_Services', label: 'Tasks', qboType: 'serviceItems', qboIdCol: 'QBO Service Item ID', qboNameCol: 'QBO Service Item Name' }
-    ];
-
-    const currentTab = tabs.find(t => t.key === Pages._mappingTab) || tabs[0];
-    const isProjectsTab = Pages._mappingTab === 'Mappings_Projects';
-    const isTasksTab = Pages._mappingTab === 'Mappings_Tasks_Services';
-    const hasStatusColumn = isProjectsTab || isTasksTab;
-
-    const tabHtml = tabs.map(t =>
-      `<button class="tab ${t.key === Pages._mappingTab ? 'active' : ''}"
-              onclick="Pages._mappingTab='${t.key}';Pages.mappings()">${t.label}</button>`
-    ).join('');
-
     content.innerHTML = `
-      <div class="tabs">${tabHtml}</div>
-      <div id="mapping-content" style="position:relative">
-        <div style="text-align:center;padding:40px"><div class="spinner"></div> Loading...</div>
+      <div class="card" style="text-align:center;padding:40px">
+        <div class="card-title">Mappings moved to Back Office</div>
+        <p style="color:var(--text-secondary);margin-bottom:16px">
+          Editing Users, Clients, Projects, and Tasks mappings now happens in Back Office,
+          not here.
+        </p>
+        <a class="btn btn-primary" href="https://backoffice.pltheatrical.com" target="_blank" rel="noopener">
+          Open Back Office
+        </a>
       </div>`;
-
-    try {
-      // Fetch mapping data and QBO options
-      const [mappingData, qboOptions] = await Promise.all([
-        API.get('getMappings', { sheet: Pages._mappingTab }),
-        Pages._qboOptions ? Promise.resolve(Pages._qboOptions) : API.get('getQBOMasterOptions')
-      ]);
-
-      Pages._qboOptions = qboOptions;
-      const mapping = mappingData.mappings[Pages._mappingTab];
-
-      if (!mapping || mapping.rows.length === 0) {
-        document.getElementById('mapping-content').innerHTML =
-          '<div class="card"><p>No data in this sheet. Run Refresh Data first.</p></div>';
-        return;
-      }
-
-      // Split into sections based on tab type
-      let unmapped = [];
-      let mapped = [];
-      let archived = [];
-
-      mapping.rows.forEach(row => {
-        const hasQboId = row[currentTab.qboIdCol];
-        const status = row['Status'] || '';
-
-        // For Projects and Tasks tabs, separate by Status (Active vs Archived)
-        if (hasStatusColumn && status === 'Archived') {
-          archived.push(row);
-        } else if (hasQboId) {
-          // Only consider "mapped" if QBO ID is set (user-confirmed)
-          // Auto-suggested items have QBO Name but no ID — they stay in Needs Mapping
-          mapped.push(row);
-        } else {
-          unmapped.push(row);
-        }
-      });
-
-      // Sort each section by Last Updated (most recent first)
-      const sortByRecent = (a, b) => {
-        const aDate = a['Last Updated'] || '';
-        const bDate = b['Last Updated'] || '';
-        return String(bDate).localeCompare(String(aDate));
-      };
-      unmapped.sort(sortByRecent);
-      mapped.sort(sortByRecent);
-      archived.sort(sortByRecent);
-
-      // Get dropdown options for this tab
-      const options = qboOptions[currentTab.qboType] || [];
-
-      // Render section helper
-      const renderSection = (rows, title, sectionClass, isCollapsible = false, isExpanded = true) => {
-        if (rows.length === 0) return '';
-
-        // Filter out internal/hidden columns
-        const headers = mapping.headers.filter(h => {
-          if (h === '_row') return false;
-          if (h === 'Last Updated' || h.includes('Updated')) return false;
-          if (h === 'Status') return false; // Hide Status column (shown in section header)
-          if (isProjectsTab && (h === 'QBO Customer ID' || h === 'QBO Customer Name')) return false;
-          return true;
-        });
-
-        const rowsHtml = rows.map(row => {
-          const isMatched = row['Matched'] === true;
-          const rowClass = isMatched ? 'row-matched' : '';
-          const currentVal = row[currentTab.qboNameCol] || '';
-          const projectId = row['Toggl Project ID'];
-          const pendingWarning = Pages._projectPendingCache[projectId];
-
-          const cells = headers.map(h => {
-            const val = row[h];
-
-            // Matched checkbox
-            if (h === 'Matched') {
-              return `<td><input type="checkbox" ${val ? 'checked' : ''}
-                onchange="Pages.updateMappingCell('${Pages._mappingTab}', ${row._row}, '${h}', this.checked)"></td>`;
-            }
-
-            // QBO Name column — always show dropdown for editing
-            if (h === currentTab.qboNameCol) {
-              const optionsHtml = options.map(opt =>
-                `<option value="${opt.name}" ${opt.name === currentVal ? 'selected' : ''}>${opt.name}</option>`
-              ).join('');
-              return `<td>
-                <select class="mapping-select" onchange="Pages.selectQboMapping('${Pages._mappingTab}', ${row._row}, '${currentTab.qboIdCol}', '${currentTab.qboNameCol}', this.value)">
-                  <option value="">-- Select --</option>
-                  ${optionsHtml}
-                </select>
-              </td>`;
-            }
-
-            // Toggl Project Name with pending warning for archived projects
-            if (h === 'Toggl Project Name' && sectionClass === 'archived' && pendingWarning) {
-              return `<td>${val} <span class="badge badge-warning" title="${pendingWarning.count} pending entries">⚠ ${pendingWarning.count} pending</span></td>`;
-            }
-
-            // Regular cell
-            return `<td>${val === null || val === undefined || val === '' ? '' : val}</td>`;
-          }).join('');
-
-          return `<tr class="${rowClass}">${cells}</tr>`;
-        }).join('');
-
-        const headerRow = headers.map(h => `<th>${h}</th>`).join('');
-        const toggleIcon = isExpanded ? '\u25BC' : '\u25B6';
-        const toggleAttr = isCollapsible ? `onclick="Pages.toggleArchivedSection()"` : '';
-        const cursorStyle = isCollapsible ? 'cursor:pointer' : '';
-
-        return `
-          <div class="mapping-section">
-            <div class="mapping-section-header ${sectionClass}" ${toggleAttr} style="${cursorStyle}">
-              ${isCollapsible ? `<span class="section-toggle">${toggleIcon}</span>` : ''}
-              ${title} <span class="mapping-section-count">${rows.length}</span>
-            </div>
-            <div class="mapping-section-content" style="display:${isExpanded ? 'block' : 'none'}">
-              <div class="table-wrap">
-                <table>
-                  <thead><tr>${headerRow}</tr></thead>
-                  <tbody>${rowsHtml}</tbody>
-                </table>
-              </div>
-            </div>
-          </div>`;
-      };
-
-      const unmappedHtml = renderSection(unmapped, '⚠ Needs Mapping', 'unmapped');
-      const mappedHtml = renderSection(mapped, '✓ Mapped', 'mapped');
-      const archivedHtml = hasStatusColumn
-        ? renderSection(archived, '📦 Archived/Completed', 'archived', true, Pages._archivedExpanded)
-        : '';
-
-      document.getElementById('mapping-content').innerHTML = unmappedHtml + mappedHtml + archivedHtml;
-
-      // Check for pending entries on archived projects (background, non-blocking)
-      if (isProjectsTab && archived.length > 0 && Pages._archivedExpanded) {
-        Pages.checkArchivedProjectsPending(archived);
-      }
-    } catch (err) {
-      document.getElementById('mapping-content').innerHTML =
-        `<div class="card"><p style="color:var(--danger)">Error: ${err.message}</p></div>`;
-    }
-  },
-
-  toggleArchivedSection() {
-    Pages._archivedExpanded = !Pages._archivedExpanded;
-    const isExpanded = Pages._archivedExpanded;
-
-    // Direct DOM toggle — no re-fetch
-    const headers = document.querySelectorAll('.mapping-section-header.archived');
-    for (const header of headers) {
-      const section = header.parentElement;
-      const content = section.querySelector('.mapping-section-content');
-      const toggle = header.querySelector('.section-toggle');
-
-      content.style.display = isExpanded ? 'block' : 'none';
-      if (toggle) toggle.textContent = isExpanded ? '\u25BC' : '\u25B6';
-
-      // Check for pending entries on first expand (background, non-blocking)
-      if (isExpanded && Pages._mappingTab === 'Mappings_Projects') {
-        Pages.checkArchivedProjectsPending(
-          Array.from(content.querySelectorAll('tr')).map(() => null) // triggers via existing cache
-        );
-      }
-    }
-  },
-
-  async checkArchivedProjectsPending(archivedProjects) {
-    // Check each archived project for pending entries (in background)
-    for (const project of archivedProjects) {
-      const projectId = project['Toggl Project ID'];
-      if (!projectId || Pages._projectPendingCache[projectId]) continue;
-
-      try {
-        const result = await API.get('getProjectPendingEntries', { projectId: String(projectId) });
-        if (result.count > 0) {
-          Pages._projectPendingCache[projectId] = { count: result.count, entries: result.entries };
-          // Re-render to show warning badge
-          Pages.mappings();
-        }
-      } catch (err) {
-        // Ignore errors for background checks
-        console.log('Pending check failed for project', projectId, err.message);
-      }
-    }
-  },
-
-  async selectQboMapping(sheet, row, idCol, nameCol, selectedName) {
-    // updateMapping is no longer callable from the dashboard — it was an
-    // arbitrary single-cell write with no validation. Edit the mapping
-    // directly in the Sheet instead.
-    Toast.error('Mapping edits now happen directly in the Sheet — this dashboard view is read-only.');
-    Pages.mappings(); // Re-render to reset the control to its saved value
-  },
-
-  async updateMappingCell(sheet, row, col, value) {
-    Toast.error('Mapping edits now happen directly in the Sheet — this dashboard view is read-only.');
-    Pages.mappings(); // Re-render to reset the control to its saved value
   },
 
   // ---------------------------------------------------------------------------
@@ -1046,10 +814,6 @@ const Pages = {
     try {
       const result = await API.post(action);
       Toast.success(result.message || 'Done!');
-      // Clear cached QBO options so they get refreshed
-      if (action === 'refreshQBOMasterLists') {
-        Pages._qboOptions = null;
-      }
     } catch (err) {
       Toast.error('Error: ' + err.message);
     } finally {

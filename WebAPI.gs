@@ -142,8 +142,6 @@ function handleApiRequest(params, isPost = false) {
         return jsonResponse(apiGetSyncStatus());
       case 'getSyncJobStatus':
         return jsonResponse(apiGetSyncJobStatus());
-      case 'getMappings':
-        return jsonResponse(apiGetMappings(params.sheet));
       case 'getSyncLog':
         return jsonResponse(apiGetSyncLog(parseInt(params.limit) || 50));
       case 'getConfig':
@@ -166,9 +164,6 @@ function handleApiRequest(params, isPost = false) {
         // getSyncJobStatus for progress/completion.
         if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
         return jsonResponse(apiSyncApproved(params));
-      case 'updateMapping':
-        if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
-        return jsonResponse(apiUpdateMapping(params));
       case 'previewApproved':
         return jsonResponse(apiPreviewApproved(params));
       case 'refreshTogglMappings':
@@ -211,27 +206,6 @@ function apiGetDashboard() {
   const syncLogSheet = ss.getSheetByName(CONFIG.SHEETS.SYNC_LOG);
   const syncLogCount = syncLogSheet ? Math.max(0, syncLogSheet.getLastRow() - 1) : 0;
   const dateRange = getImportDateRange();
-
-  // Mapping completeness
-  const mappingStats = {};
-  const mappingSheets = {
-    users: { sheet: CONFIG.SHEETS.MAPPINGS_USERS, idCol: 4 },
-    clients: { sheet: CONFIG.SHEETS.MAPPINGS_CLIENTS, idCol: 3 },
-    projects: { sheet: CONFIG.SHEETS.MAPPINGS_PROJECTS, idCol: 5 },
-    tasks: { sheet: CONFIG.SHEETS.MAPPINGS_TASKS, idCol: 5 }
-  };
-
-  for (const [key, cfg] of Object.entries(mappingSheets)) {
-    const sheet = ss.getSheetByName(cfg.sheet);
-    if (sheet && sheet.getLastRow() > 1) {
-      const rows = sheet.getLastRow() - 1;
-      const ids = sheet.getRange(2, cfg.idCol, rows, 1).getValues();
-      const mapped = ids.filter(r => r[0] !== '' && r[0] !== null).length;
-      mappingStats[key] = { total: rows, mapped, unmapped: rows - mapped };
-    } else {
-      mappingStats[key] = { total: 0, mapped: 0, unmapped: 0 };
-    }
-  }
 
   // Pending sync
   const hasPending = hasPendingSync();
@@ -278,7 +252,6 @@ function apiGetDashboard() {
       hasPendingSync: hasPending,
       syncStatus
     },
-    mappings: mappingStats,
     api: {
       lastSyncCalls,
       budget: getConfigValue('TOGGL_API_BUDGET', '180')
@@ -344,57 +317,6 @@ function apiGetSyncStatus() {
       pausedAt: state.pausedAt || null
     } : null
   };
-}
-
-/**
- * Returns mapping data for a specific sheet
- */
-function apiGetMappings(sheetName) {
-  const validSheets = [
-    CONFIG.SHEETS.MAPPINGS_USERS,
-    CONFIG.SHEETS.MAPPINGS_CLIENTS,
-    CONFIG.SHEETS.MAPPINGS_PROJECTS,
-    CONFIG.SHEETS.MAPPINGS_TASKS
-  ];
-
-  if (!sheetName || !validSheets.includes(sheetName)) {
-    // Return all mappings summary
-    const all = {};
-    for (const name of validSheets) {
-      all[name] = getMappingSheetData(name);
-    }
-    return { mappings: all };
-  }
-
-  return { mappings: { [sheetName]: getMappingSheetData(sheetName) } };
-}
-
-/**
- * Reads mapping sheet data into a structured format
- */
-function getMappingSheetData(sheetName) {
-  const ss = getSpreadsheet();
-  const sheet = ss.getSheetByName(sheetName);
-
-  if (!sheet || sheet.getLastRow() <= 1) {
-    return { headers: [], rows: [] };
-  }
-
-  const lastRow = sheet.getLastRow();
-  const lastCol = sheet.getLastColumn();
-  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
-
-  const rows = data.map((row, idx) => {
-    const obj = {};
-    headers.forEach((h, i) => {
-      obj[h] = row[i];
-    });
-    obj._row = idx + 2; // 1-indexed row number in sheet
-    return obj;
-  });
-
-  return { headers, rows };
 }
 
 /**
@@ -619,43 +541,6 @@ function apiRefreshQBOMasterLists() {
 function apiWireDropdowns() {
   wireAllDropdowns();
   return { message: 'Dropdowns wired' };
-}
-
-/**
- * Updates a single mapping cell
- * Params: sheet (sheet name), row (row number), col (column name or number), value
- */
-function apiUpdateMapping(params) {
-  const { sheet: sheetName, row, col, value } = params;
-
-  const validSheets = [
-    CONFIG.SHEETS.MAPPINGS_USERS,
-    CONFIG.SHEETS.MAPPINGS_CLIENTS,
-    CONFIG.SHEETS.MAPPINGS_PROJECTS,
-    CONFIG.SHEETS.MAPPINGS_TASKS
-  ];
-
-  if (!validSheets.includes(sheetName)) {
-    throw new Error(`Invalid sheet: ${sheetName}`);
-  }
-
-  const ss = getSpreadsheet();
-  const sheet = ss.getSheetByName(sheetName);
-  if (!sheet) throw new Error(`Sheet not found: ${sheetName}`);
-
-  const rowNum = parseInt(row);
-  let colNum = parseInt(col);
-
-  // If col is a string (header name), find the column number
-  if (isNaN(colNum)) {
-    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-    colNum = headers.indexOf(col) + 1;
-    if (colNum === 0) throw new Error(`Column not found: ${col}`);
-  }
-
-  sheet.getRange(rowNum, colNum).setValue(value === 'true' ? true : value === 'false' ? false : value);
-
-  return { message: `Updated ${sheetName} row ${rowNum} col ${colNum}` };
 }
 
 /**
