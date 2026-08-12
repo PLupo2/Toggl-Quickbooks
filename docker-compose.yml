@@ -1,0 +1,34 @@
+services:
+  timesync:
+    build: .
+    container_name: timesync
+    restart: unless-stopped
+    ports:
+      - "5175:5175"
+    volumes:
+      - ./data:/data
+      # PLT Core token vending (QBO + Toggl) -- Phase 3 / R3
+      - /Users/pltheatrical2/secrets/plt_core_timesync_api_key.txt:/run/secrets/plt_core_timesync_api_key.txt:ro
+      - /Users/pltheatrical2/secrets/plt_core_cf_client_id.txt:/run/secrets/plt_core_cf_client_id.txt:ro
+      - /Users/pltheatrical2/secrets/plt_core_cf_client_secret.txt:/run/secrets/plt_core_cf_client_secret.txt:ro
+      # Cloudflare Access JWT verification (this service's own AUD, belt-and-suspenders check)
+      - /Users/pltheatrical2/secrets/cf_access_timesync_aud.txt:/run/secrets/cf_access_timesync_aud.txt:ro
+      # Back Office mapping fetch -- same service-token pair already used for
+      # this since D1/D2 (Cloudflare Access service token + Back Office's own API key)
+      - /Users/pltheatrical2/secrets/timesync_cf_client_id.txt:/run/secrets/timesync_cf_client_id.txt:ro
+      - /Users/pltheatrical2/secrets/timesync_cf_client_secret.txt:/run/secrets/timesync_cf_client_secret.txt:ro
+      - /Users/pltheatrical2/secrets/back_office_timesync_api_key.txt:/run/secrets/back_office_timesync_api_key.txt:ro
+    environment:
+      - DB_PATH=/data/timesync.db
+      - SECRETS_DIR=/run/secrets
+      # Best-effort abort alert (back_office_client._send_pushover), same
+      # pattern as Back Office's own _send_pushover. Fill in to enable --
+      # silently no-ops if unset, matching the house "best-effort" convention.
+      - PUSHOVER_TOKEN=
+      - PUSHOVER_USER=
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5175/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

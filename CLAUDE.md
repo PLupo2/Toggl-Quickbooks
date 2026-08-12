@@ -126,6 +126,7 @@ TimeSync is actively used in production, so changes are deliberate and verified 
 - Web UI: git push to main triggers GitHub Actions → GitHub Pages deployment
 - OAuth callback URL must match the deployed Web App URL exactly
 - Two environments: QBO Sandbox (testing) and QBO Production (live)
+- **PHASE 3 APPROVED (2026-08-12): full backend cutover to the Mac Mini.** FastAPI in Docker (container `timesync`, port 5175) serving UI+API at timesync.pltheatrical.com via tunnel+Access; timesync.db homes Sync_Log+Config; tokens from PLT Core; sandbox toggle retired; scheduler built but disabled; big-bang flip with Worker-route rollback lever, 2-week Google dormancy then demolition. Full rulings (R1-R5), scope, and acceptance: Phase 3 entry in the spec doc. Build pending SM dispatch. NOTE: the Apps Script/clasp/GitHub Pages facts in this file describe the OUTGOING system.
 
 
 ## SPEC DOC

@@ -21,3 +21,12 @@ Thumbs.db
 .claude/
 kanban-board/
 .clasp.json
+
+# Phase 3 (FastAPI service): runtime DB and one-time Sheet-export import
+# source both contain real historical business data (time entry
+# descriptions, client/project names) -- not code, don't belong in git.
+/data/
+/build_data/
+__pycache__/
+*.pyc
+
