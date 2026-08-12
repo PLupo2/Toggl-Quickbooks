@@ -36,22 +36,38 @@
  * the path-scoped /api/mappings/all Access app), and BACK_OFFICE_API_KEY
  * (Back Office's second auth layer). BACK_OFFICE_MAPPINGS_URL is optional,
  * defaulting to the production endpoint.
- * @returns {Object} Mappings object with users, clients, projects, tasks
+ *
+ * @param {Object} [options]
+ * @param {boolean} [options.abortOnFailure=true] The sync path leaves this
+ *   true: a fetch failure aborts the run and emails (a partial/stale sync
+ *   writes wrong money). Read-only display callers (e.g. the preview task
+ *   column) pass false to degrade gracefully — on failure this returns null
+ *   and does NOT email/throw, since a preview that can't show a task name is
+ *   not worth paging anyone over.
+ * @returns {Object|null} Mappings object with users, clients, projects, tasks
+ *   (null only when abortOnFailure is false and the fetch failed)
  */
-function buildMappingLookups() {
+function buildMappingLookups(options = {}) {
+  const abortOnFailure = options.abortOnFailure !== false; // default true (production sync path)
+  const fail = (reason) => {
+    if (abortOnFailure) return abortRunForMappingFetchFailure(reason); // logs, emails, throws
+    logMessage(`Back Office mapping fetch failed (non-aborting caller): ${reason}`, 'WARN');
+    return null;
+  };
+
   const url = getBackOfficeMappingsUrl();
   const cfClientId = getBackOfficeCfAccessClientId();
   const cfClientSecret = getBackOfficeCfAccessClientSecret();
   const apiKey = getBackOfficeApiKey();
 
   if (!cfClientId || !cfClientSecret || !apiKey) {
-    return abortRunForMappingFetchFailure(
+    return fail(
       'Back Office credentials not configured — set BACK_OFFICE_CF_ACCESS_CLIENT_ID, ' +
       'BACK_OFFICE_CF_ACCESS_CLIENT_SECRET, and BACK_OFFICE_API_KEY in Script Properties'
     );
   }
 
-  const options = {
+  const fetchOptions = {
     method: 'get',
     headers: {
       'CF-Access-Client-Id': cfClientId,
@@ -63,14 +79,14 @@ function buildMappingLookups() {
 
   let response;
   try {
-    response = UrlFetchApp.fetch(url, options);
+    response = UrlFetchApp.fetch(url, fetchOptions);
   } catch (e) {
-    return abortRunForMappingFetchFailure(`Back Office mapping fetch threw: ${e.message}`);
+    return fail(`Back Office mapping fetch threw: ${e.message}`);
   }
 
   const responseCode = response.getResponseCode();
   if (responseCode !== 200) {
-    return abortRunForMappingFetchFailure(
+    return fail(
       `Back Office mapping fetch returned ${responseCode}: ${response.getContentText().slice(0, 300)}`
     );
   }
@@ -79,11 +95,11 @@ function buildMappingLookups() {
   try {
     mappings = JSON.parse(response.getContentText());
   } catch (e) {
-    return abortRunForMappingFetchFailure(`Back Office mapping response was not valid JSON: ${e.message}`);
+    return fail(`Back Office mapping response was not valid JSON: ${e.message}`);
   }
 
   if (!mappings || !mappings.users || !mappings.clients || !mappings.projects || !mappings.tasks) {
-    return abortRunForMappingFetchFailure('Back Office mapping response missing an expected key (users/clients/projects/tasks)');
+    return fail('Back Office mapping response missing an expected key (users/clients/projects/tasks)');
   }
 
   logMessage(

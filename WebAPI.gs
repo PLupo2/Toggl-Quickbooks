@@ -477,14 +477,17 @@ function apiPreviewApproved(params) {
   const projectMap = {};
   projects.forEach(p => { projectMap[p.id] = p.name; });
 
-  // Build task lookup (from mapping sheet - zero API calls)
-  const taskMappings = getTasksFromMappingSheet();
+  // Build task lookup from Back Office (togglTaskName) — post-D2 there is no
+  // in-sheet task source. Non-aborting: if Back Office is unreachable the
+  // preview just shows blank tasks; it must NOT email/abort like the sync
+  // path does (this is a read-only review, not a money write).
   const taskMap = {};
-  taskMappings.forEach(t => {
-    if (t.togglTaskId) {
-      taskMap[t.togglTaskId] = t.togglTaskName;
-    }
-  });
+  const boMappings = buildMappingLookups({ abortOnFailure: false });
+  if (boMappings && boMappings.tasks) {
+    Object.keys(boMappings.tasks).forEach(id => {
+      if (boMappings.tasks[id].togglTaskName) taskMap[id] = boMappings.tasks[id].togglTaskName;
+    });
+  }
 
   // entries/count stay scoped to "will actually be written" (unchanged
   // contract — the frontend's Sync button reads count directly). The new

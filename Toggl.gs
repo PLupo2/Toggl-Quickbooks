@@ -1440,6 +1440,16 @@ function syncApprovedEntries(options = {}) {
   // Build mapping lookups for QBO resolution
   const mappings = buildMappingLookups();
 
+  // Show the Toggl task name (fetched from Back Office alongside the QBO
+  // mapping) in Sync_Log's "Toggl Task" column. Post-D2 the old in-sheet task
+  // source is gone, so togglLookups.tasks is empty and that column would
+  // otherwise be blank. Keyed by string id; processTimeEntry's numeric
+  // task_id coerces to the same key.
+  Object.keys(mappings.tasks).forEach(id => {
+    const name = mappings.tasks[id].togglTaskName;
+    if (name) togglLookups.tasks[id] = name;
+  });
+
   // D2: rebuilt at sync start, never inherited from a preview. Updated
   // in-memory below as the run writes, so this run cannot double-write
   // against its own output.
@@ -1528,6 +1538,15 @@ function syncApprovedEntries(options = {}) {
         results.errors.push({ entryId, error: error.message });
         logMessage(`Error processing entry ${entryId}: ${error.message}`, 'ERROR');
       }
+    }
+
+    // Live progress: an async job caller (runScheduledSyncJob) passes
+    // onProgress to push running counts into SYNC_JOB_META, so the dashboard's
+    // "N synced so far" climbs during the run instead of sitting at 0 until
+    // completion. Wrapped so a progress-write hiccup can never break the sync.
+    if (typeof options.onProgress === 'function') {
+      try { options.onProgress(results.synced, results.failed, results.alreadySynced); }
+      catch (progressErr) { logMessage(`onProgress callback threw (ignored): ${progressErr.message}`, 'WARN'); }
     }
 
     // Delay between QBO calls to avoid bandwidth quota
@@ -2351,7 +2370,18 @@ function runScheduledSyncJob() {
   }
 
   try {
-    const result = syncApprovedEntries({ fromWebApi: true, forceEntryIds: meta.forceEntryIds });
+    // Push live counts into the job meta as the run writes, so the dashboard
+    // poller shows a climbing "N synced" instead of 0 until the very end.
+    // Throttled (every 5 entries) to keep Script Property writes down; the
+    // completion/pause writes below set the exact finals regardless.
+    const onProgress = (synced, failed, alreadySynced) => {
+      if ((synced + failed + alreadySynced) % 5 !== 0) return;
+      const cur = getSyncJobMeta();
+      if (cur && cur.jobId === meta.jobId && cur.status === 'running') {
+        saveSyncJobMeta({ ...cur, totalSynced: synced, totalFailed: failed, totalAlreadySynced: alreadySynced });
+      }
+    };
+    const result = syncApprovedEntries({ fromWebApi: true, forceEntryIds: meta.forceEntryIds, onProgress });
 
     if (hasPendingSync()) {
       // Budget-exhausted mid-run: syncApprovedEntries already called
