@@ -535,13 +535,35 @@ const Pages = {
     }
 
     try {
-      const start = await API.post('syncApproved');
+      let start;
+      try {
+        start = await API.post('syncApproved');
+      } catch (err) {
+        if (!API._isRetryable(err)) throw err;
+        // The POST hit the transient /exec redirect window (e.g. a
+        // googleusercontent interstitial). The sync start is guarded
+        // server-side (LockService + existing-job check in startAsyncSyncJob),
+        // so it may have actually started even though the response was lost.
+        // Check the persisted job state first and adopt a running job rather
+        // than risk a redundant submit; only re-POST if nothing started —
+        // and even that re-POST is server-deduped, so it can't double-sync.
+        let existing = null;
+        try { existing = await API.get('getSyncJobStatus'); } catch (_) { /* fall through to resubmit */ }
+        if (existing && (existing.status === 'running' || existing.status === 'paused')) {
+          start = { jobId: existing.jobId, alreadyRunning: true };
+        } else {
+          start = await API.post('syncApproved');
+        }
+      }
       if (start.alreadyRunning) {
         Toast.success('A sync was already in progress — resuming status.');
       }
       Pages._pollSyncJob(start.jobId); // not awaited — updates the DOM as it goes
     } catch (err) {
-      Toast.error('Sync failed to start: ' + err.message);
+      const msg = API._isRetryable(err)
+        ? "a brief Apps Script/network hiccup — try Sync Now again in a moment."
+        : err.message;
+      Toast.error('Sync failed to start: ' + msg);
       if (btn) {
         btn.disabled = false;
         btn.textContent = 'Sync Now';
@@ -896,24 +918,43 @@ const Pages = {
 // ===========================================================================
 
 const Toast = {
-  show(message, type = 'info') {
+  show(message, type = 'info', opts = {}) {
     const container = document.getElementById('toast-container');
     if (!container) return;
 
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
-    toast.textContent = message;
-    container.appendChild(toast);
 
-    setTimeout(() => {
+    const text = document.createElement('span');
+    text.textContent = message;
+    toast.appendChild(text);
+
+    const dismiss = () => {
       toast.style.opacity = '0';
       toast.style.transition = 'opacity 0.3s';
       setTimeout(() => toast.remove(), 300);
-    }, 4000);
+    };
+
+    // A × dismiss button is always available. Errors persist until dismissed
+    // (they carry text worth reading/copying and shouldn't vanish mid-read);
+    // success/info auto-dismiss after 4s. Callers can override via opts.persist.
+    const close = document.createElement('button');
+    close.className = 'toast-close';
+    close.setAttribute('aria-label', 'Dismiss');
+    close.textContent = '×';
+    close.onclick = dismiss;
+    toast.appendChild(close);
+
+    container.appendChild(toast);
+
+    const persist = opts.persist !== undefined ? opts.persist : (type === 'error');
+    if (!persist) {
+      setTimeout(dismiss, 4000);
+    }
   },
-  success(msg) { this.show(msg, 'success'); },
-  error(msg) { this.show(msg, 'error'); },
-  info(msg) { this.show(msg, 'info'); }
+  success(msg, opts) { this.show(msg, 'success', opts); },
+  error(msg, opts) { this.show(msg, 'error', opts); },
+  info(msg, opts) { this.show(msg, 'info', opts); }
 };
 
 // ===========================================================================

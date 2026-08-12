@@ -762,6 +762,26 @@ tr.row-unmapped td {
   background: linear-gradient(90deg, var(--surface) 0%, var(--blue-light) 100%);
 }
 
+.toast > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.toast-close {
+  flex-shrink: 0;
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.toast-close:hover { color: var(--text-primary); }
+
 @keyframes toastIn {
   0% { transform: translateX(120%) scale(0.9); opacity: 0; }
   100% { transform: translateX(0) scale(1); opacity: 1; }
