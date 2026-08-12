@@ -755,8 +755,8 @@ const Pages = {
           Editing Users, Clients, Projects, and Tasks mappings now happens in Back Office,
           not here.
         </p>
-        <a class="btn btn-primary" href="https://backoffice.pltheatrical.com" target="_blank" rel="noopener">
-          Open Back Office
+        <a class="btn btn-primary" href="https://backoffice.pltheatrical.com/#/mappings" target="_blank" rel="noopener">
+          Open Mappings in Back Office
         </a>
       </div>`;
   },
