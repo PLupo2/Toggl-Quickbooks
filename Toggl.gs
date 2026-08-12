@@ -1601,10 +1601,9 @@ function syncApprovedEntries(options = {}) {
 /**
  * Resolves QBO mapping lookups into TimeActivity fields for a processed
  * entry, or a validation error — the actual per-entry resolution logic
- * used by production sync. Factored out of syncSingleEntry so the D2
- * cutover dry-run comparison (dryRunCompareMappingSources in Mappings.gs)
- * exercises this exact code path against both mapping sources, instead of
- * a separate reimplementation that could silently drift from it.
+ * used by production sync. Factored out of syncSingleEntry as the single
+ * resolution path (the D2 cutover dry-run that also used it has since been
+ * retired along with the rest of the in-sheet mapping tooling).
  * @param {Object} entry - Processed time entry
  * @param {Object} mappings - QBO mapping lookups
  * @returns {{success: true, timeData: Object}|{success: false, error: string}}

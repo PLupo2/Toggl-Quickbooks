@@ -148,8 +148,6 @@ function handleApiRequest(params, isPost = false) {
         return jsonResponse(apiGetConfig());
       case 'getConnectionStatus':
         return jsonResponse(apiGetConnectionStatus());
-      case 'getQBOMasterOptions':
-        return jsonResponse(apiGetQBOMasterOptions());
       case 'getProjectPendingEntries':
         return jsonResponse(apiGetProjectPendingEntries(params.projectId));
 
@@ -166,15 +164,6 @@ function handleApiRequest(params, isPost = false) {
         return jsonResponse(apiSyncApproved(params));
       case 'previewApproved':
         return jsonResponse(apiPreviewApproved(params));
-      case 'refreshTogglMappings':
-        if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
-        return jsonResponse(apiRefreshTogglMappings());
-      case 'refreshQBOMasterLists':
-        if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
-        return jsonResponse(apiRefreshQBOMasterLists());
-      case 'wireDropdowns':
-        if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
-        return jsonResponse(apiWireDropdowns());
       case 'recomputeDisagreement':
         if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
         return jsonResponse(apiRecomputeDisagreement());
@@ -520,30 +509,6 @@ function apiPreviewApproved(params) {
 }
 
 /**
- * Refreshes Toggl mapping sheets
- */
-function apiRefreshTogglMappings() {
-  refreshTogglMappings();
-  return { message: 'Toggl mappings refreshed' };
-}
-
-/**
- * Refreshes QBO master lists
- */
-function apiRefreshQBOMasterLists() {
-  refreshQBOMasterLists();
-  return { message: 'QBO master lists refreshed' };
-}
-
-/**
- * Wires dropdowns on mapping sheets
- */
-function apiWireDropdowns() {
-  wireAllDropdowns();
-  return { message: 'Dropdowns wired' };
-}
-
-/**
  * Sets a config value
  */
 function apiSetConfig(key, value) {
@@ -603,35 +568,6 @@ function apiGetConnectionStatus() {
       connected: togglConnected,
       workspaceId: togglWorkspace
     }
-  };
-}
-
-/**
- * Returns QBO master list options for dropdown selectors
- */
-function apiGetQBOMasterOptions() {
-  const ss = getSpreadsheet();
-
-  const getOptions = (sheetName, idCol, nameCol) => {
-    const sheet = ss.getSheetByName(sheetName);
-    if (!sheet || sheet.getLastRow() <= 1) {
-      return [];
-    }
-    const lastRow = sheet.getLastRow();
-    const data = sheet.getRange(2, 1, lastRow - 1, Math.max(idCol, nameCol)).getValues();
-    return data
-      .filter(row => row[idCol - 1] && row[nameCol - 1])
-      .map(row => ({
-        id: String(row[idCol - 1]),
-        name: String(row[nameCol - 1])
-      }));
-  };
-
-  return {
-    employees: getOptions(CONFIG.SHEETS.QBO_EMPLOYEES, 1, 2),   // ID col 1, Name col 2
-    customers: getOptions(CONFIG.SHEETS.QBO_CUSTOMERS, 1, 2),   // ID col 1, Name col 2
-    projects: getOptions(CONFIG.SHEETS.QBO_PROJECTS, 1, 2),     // ID col 1, Name col 2
-    serviceItems: getOptions(CONFIG.SHEETS.QBO_ITEMS, 1, 2)     // ID col 1, Name col 2
   };
 }
 

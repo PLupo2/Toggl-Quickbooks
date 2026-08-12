@@ -47,15 +47,6 @@ function createMenu() {
         .addItem('Show Toggl Status', 'showTogglStatus')
     )
 
-    // Refresh submenu
-    .addSubMenu(
-      ui.createMenu('Refresh Data')
-        .addItem('Refresh Toggl Mappings', 'refreshTogglMappings')
-        .addItem('Refresh QBO Master Lists', 'refreshQBOMasterLists')
-        .addSeparator()
-        .addItem('Wire Dropdowns', 'wireAllDropdowns')
-    )
-
     // Settings submenu
     .addSubMenu(
       ui.createMenu('Settings')
@@ -65,20 +56,12 @@ function createMenu() {
     // Maintenance submenu
     .addSubMenu(
       ui.createMenu('Maintenance')
-        .addItem('Cleanup Orphaned Mappings', 'cleanupOrphanedMappings')
         .addItem('View Sync Log', 'viewSyncLog')
         .addItem('Clear Sync Log', 'clearSyncLog')
         .addSeparator()
         .addItem('Check QBO Projects Availability', 'showProjectsInfo')
         .addSeparator()
-        .addItem('Hide QBO Master Sheets', 'hideQBOMasterSheets')
-        .addItem('Show QBO Master Sheets', 'showQBOMasterSheets')
-        .addSeparator()
-        .addItem('Apply Mapping Highlights', 'applyUnmappedRowHighlighting')
         .addItem('Sync Missing Config Keys', 'syncMissingConfigKeys')
-        .addSeparator()
-        .addItem('D2: Run Dry Run Comparison', 'runD2DryRunComparison')
-        .addItem('D2: Rename Old Mapping Tabs', 'runD2RenameOldMappingTabs')
     )
 
     .addSeparator()
@@ -103,35 +86,22 @@ function buildAllSheets() {
     // Sync Log sheet
     getOrCreateSheet(CONFIG.SHEETS.SYNC_LOG, CONFIG.COLUMNS.SYNC_LOG);
 
-    // Mapping sheets
-    getOrCreateSheet(CONFIG.SHEETS.MAPPINGS_CLIENTS, CONFIG.COLUMNS.MAPPINGS_CLIENTS);
-    getOrCreateSheet(CONFIG.SHEETS.MAPPINGS_PROJECTS, CONFIG.COLUMNS.MAPPINGS_PROJECTS);
-    getOrCreateSheet(CONFIG.SHEETS.MAPPINGS_USERS, CONFIG.COLUMNS.MAPPINGS_USERS);
-    getOrCreateSheet(CONFIG.SHEETS.MAPPINGS_TASKS, CONFIG.COLUMNS.MAPPINGS_TASKS);
-
-    // QBO Master sheets
-    getOrCreateSheet(CONFIG.SHEETS.QBO_CUSTOMERS, CONFIG.COLUMNS.QBO_CUSTOMERS);
-    getOrCreateSheet(CONFIG.SHEETS.QBO_EMPLOYEES, CONFIG.COLUMNS.QBO_EMPLOYEES);
-    getOrCreateSheet(CONFIG.SHEETS.QBO_ITEMS, CONFIG.COLUMNS.QBO_ITEMS);
-    getOrCreateSheet(CONFIG.SHEETS.QBO_PROJECTS, CONFIG.COLUMNS.QBO_PROJECTS);
-
-    // Format all sheets
+    // Format the sheets we own. Mapping and QBO-master tabs are no longer
+    // created here — Back Office is the sole mapping surface post-D2 cutover
+    // (2026-08-11); the sync reads mappings from Back Office, not the sheet.
     formatAllSheets();
 
-    // Hide the QBO master sheets (they're for data validation, not user interaction)
-    hideQBOMasterSheets();
-
     showAlert(
-      'All sheets have been created successfully!\n\n' +
+      'Sheets created.\n\n' +
       'Next steps:\n' +
-      '1. Set your credentials in Script Properties (TOGGL_API_TOKEN, INTUIT_CLIENT_ID, etc.)\n' +
-      '2. Connect to QuickBooks (Setup > Connect to QuickBooks)\n' +
-      '3. Refresh data (Refresh Data > Refresh QBO Master Lists, then Refresh Toggl Mappings)\n' +
-      '4. Configure your mappings in the Mappings_ sheets\n\n' +
+      '1. Set your credentials in Script Properties (TOGGL_API_TOKEN, INTUIT_CLIENT_ID, ' +
+      'and the BACK_OFFICE_* keys).\n' +
+      '2. Connect to QuickBooks (Setup > Connect to QuickBooks).\n' +
+      '3. Manage mappings in Back Office (backoffice.pltheatrical.com), not here.\n\n' +
       'Workflow:\n' +
       '1. In Toggl Track, add "Approved" tag to entries ready to sync\n' +
       '2. Run "Sync Operations > Sync Approved Entries"\n' +
-      '3. The script will sync to QBO and add "Synced" tag back to Toggl',
+      '3. The script syncs to QBO and adds the "Synced" tag back to Toggl',
       'Setup Complete'
     );
   } catch (error) {
@@ -141,22 +111,13 @@ function buildAllSheets() {
 }
 
 /**
- * Applies consistent formatting to all sheets
+ * Applies consistent formatting to the sheets this script owns (Sync_Log).
  */
 function formatAllSheets() {
   const ss = getSpreadsheet();
 
-  // Format each sheet with appropriate header color
   const sheetConfigs = [
-    { name: CONFIG.SHEETS.SYNC_LOG, headerColor: '#674ea7' },  // Purple for sync log
-    { name: CONFIG.SHEETS.MAPPINGS_CLIENTS, headerColor: '#6aa84f' },
-    { name: CONFIG.SHEETS.MAPPINGS_PROJECTS, headerColor: '#6aa84f' },
-    { name: CONFIG.SHEETS.MAPPINGS_USERS, headerColor: '#6aa84f' },
-    { name: CONFIG.SHEETS.MAPPINGS_TASKS, headerColor: '#6aa84f' },
-    { name: CONFIG.SHEETS.QBO_CUSTOMERS, headerColor: '#3d85c6' },
-    { name: CONFIG.SHEETS.QBO_EMPLOYEES, headerColor: '#3d85c6' },
-    { name: CONFIG.SHEETS.QBO_ITEMS, headerColor: '#3d85c6' },
-    { name: CONFIG.SHEETS.QBO_PROJECTS, headerColor: '#3d85c6' }
+    { name: CONFIG.SHEETS.SYNC_LOG, headerColor: '#674ea7' }  // Purple for sync log
   ];
 
   sheetConfigs.forEach(config => {

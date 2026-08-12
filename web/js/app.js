@@ -48,10 +48,6 @@ const App = {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
               Mappings
             </button>
-            <button class="nav-item" data-page="refresh" onclick="App.navigate('refresh')">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-              Refresh Data
-            </button>
             <div class="nav-section">Config</div>
             <button class="nav-item" data-page="settings" onclick="App.navigate('settings')">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -117,7 +113,6 @@ const App = {
       sync: 'Sync Entries',
       log: 'Sync Log',
       mappings: 'Mappings',
-      refresh: 'Refresh Data',
       settings: 'Settings'
     };
     document.getElementById('page-title').textContent = titles[page] || page;
@@ -129,7 +124,6 @@ const App = {
       sync: () => Pages.sync(),
       log: () => Pages.log(),
       mappings: () => Pages.mappings(),
-      refresh: () => Pages.refresh(),
       settings: () => Pages.settings()
     };
 
@@ -765,61 +759,6 @@ const Pages = {
           Open Back Office
         </a>
       </div>`;
-  },
-
-  // ---------------------------------------------------------------------------
-  // Refresh Data
-  // ---------------------------------------------------------------------------
-  async refresh() {
-    const _rt = App.renderToken;
-    const content = document.getElementById('content');
-    content.innerHTML = `
-      <div class="stats-grid">
-        <div class="card" style="text-align:center">
-          <div class="card-title">Toggl Mappings</div>
-          <p style="color:var(--text-secondary);margin-bottom:16px">
-            Refresh Users, Clients, Projects, and Tasks from Toggl
-          </p>
-          <button class="btn btn-primary" id="refresh-toggl" onclick="Pages.runRefresh('refreshTogglMappings', 'refresh-toggl')">
-            Refresh Toggl Mappings
-          </button>
-        </div>
-        <div class="card" style="text-align:center">
-          <div class="card-title">QBO Master Lists</div>
-          <p style="color:var(--text-secondary);margin-bottom:16px">
-            Refresh Customers, Employees, Items, and Projects from QuickBooks
-          </p>
-          <button class="btn btn-primary" id="refresh-qbo" onclick="Pages.runRefresh('refreshQBOMasterLists', 'refresh-qbo')">
-            Refresh QBO Master Lists
-          </button>
-        </div>
-      </div>
-      <div class="card" style="text-align:center">
-        <div class="card-title">Wire Dropdowns</div>
-        <p style="color:var(--text-secondary);margin-bottom:16px">
-          Re-create data validation dropdowns on all mapping sheets from the master lists
-        </p>
-        <button class="btn" id="refresh-wire" onclick="Pages.runRefresh('wireDropdowns', 'refresh-wire')">
-          Wire Dropdowns
-        </button>
-      </div>`;
-  },
-
-  async runRefresh(action, btnId) {
-    const btn = document.getElementById(btnId);
-    const label = btn.textContent;
-    btn.disabled = true;
-    btn.innerHTML = `<div class="spinner"></div> Running...`;
-
-    try {
-      const result = await API.post(action);
-      Toast.success(result.message || 'Done!');
-    } catch (err) {
-      Toast.error('Error: ' + err.message);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = label;
-    }
   },
 
   // ---------------------------------------------------------------------------
