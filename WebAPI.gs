@@ -355,7 +355,11 @@ function apiGetConfig() {
     batchSize: getConfigValue('BATCH_SIZE', CONFIG.DEFAULTS.BATCH_SIZE || '50'),
     defaultServiceItemId: getConfigValue('DEFAULT_SERVICE_ITEM_ID', ''),
     defaultServiceItemName: getConfigValue('DEFAULT_SERVICE_ITEM_NAME', ''),
-    qboEnv: getConfigValue('QBO_ENV', 'production')
+    // QBO_ENV lives in Script Properties (getQBOEnvironment is the authority,
+    // read by Auth.gs + getQBOBaseURL) — NOT the Config sheet. Read it from
+    // the real store so the Settings dropdown reflects the environment the
+    // sync actually uses.
+    qboEnv: getQBOEnvironment()
   };
 }
 
@@ -512,10 +516,27 @@ function apiPreviewApproved(params) {
  * Sets a config value
  */
 function apiSetConfig(key, value) {
+  // QBO_ENV is a Script Property (getQBOEnvironment reads it there), not a
+  // Config-sheet cell — route it to the authoritative store, and validate
+  // it, so the Settings toggle actually switches environments instead of
+  // writing a Config-sheet value nothing consumes.
+  if (key === 'QBO_ENV') {
+    const env = String(value).toLowerCase();
+    if (env !== 'production' && env !== 'sandbox') {
+      throw new Error(`Invalid QBO_ENV: ${value} (must be 'production' or 'sandbox')`);
+    }
+    setScriptProperty('QBO_ENV', env);
+    return { message: 'Config QBO_ENV updated', key, value: env };
+  }
+
+  // Config-sheet settings the dashboard is allowed to write. BATCH_SIZE is
+  // included so the Settings "Save" doesn't throw partway through the loop
+  // (it posts every field; a disallowed key aborts the whole save and
+  // silently drops the fields after it).
   const allowedKeys = [
     'START_DATE', 'END_DATE', 'IMPORT_DAYS', 'APPROVED_TAG', 'SYNCED_TAG',
-    'TOGGL_API_BUDGET', 'SYNC_BILLABLE_ONLY', 'DEFAULT_SERVICE_ITEM_ID',
-    'DEFAULT_SERVICE_ITEM_NAME'
+    'TOGGL_API_BUDGET', 'SYNC_BILLABLE_ONLY', 'BATCH_SIZE',
+    'DEFAULT_SERVICE_ITEM_ID', 'DEFAULT_SERVICE_ITEM_NAME'
   ];
 
   if (!allowedKeys.includes(key)) {

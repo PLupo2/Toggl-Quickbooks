@@ -16,11 +16,13 @@ Google Apps Script system that syncs time entries from Toggl Track to QuickBooks
 (root — Apps Script files, clasp rootDir)
   Auth.gs           — OAuth 2.0 flow for QuickBooks Online
   Config.gs         — Configuration and script properties
-  Mappings.gs       — Entity mapping logic (Toggl ↔ QBO)
+  Mappings.gs       — Mapping lookup: single bulk GET from Back Office per run
+                      (buildMappingLookups + abort handler). Post-D2 the
+                      in-sheet mapping editor/refresh tooling was removed.
   Menu.gs           — Google Sheets custom menu
   QuickBooks.gs     — QBO API client
-  Toggl.gs          — Toggl Track API client
-  WebAPI.gs         — Web app endpoint (doGet/doPost for OAuth callback)
+  Toggl.gs          — Toggl Track API client + sync engine
+  WebAPI.gs         — Web app endpoint (doGet/doPost: OAuth callback + dashboard API)
   appsscript.json   — Apps Script manifest (webapp deployment)
 web/
   index.html        — Web UI entry point
@@ -131,9 +133,11 @@ TimeSync is actively used in production, so changes are deliberate and verified 
 - The "no dedicated spec doc" line that used to be here was itself stale (dated to the 2026-03-25 batch update, never corrected when this doc was created). The global project index row (`~/Projects/stage-manager/GLOBAL_CLAUDE.md`) needs the same correction — Stage Manager's registry `spec_doc_id` was committed (`f30997f`) but is inert until the daemon restarts, so the index table may still show `—` until then.
 
 ## KNOWN ISSUES
-- **D2 cutover COMPLETE (2026-08-11).** Back Office is now the sole mapping source of truth. `buildMappingLookups()` reads from Back Office's `/api/mappings/all` (commit `5dee993`); the dashboard's own Mappings editor was retired (`4e30f0c`, nav now links to Back Office). All three former manual steps are done: the three `BACK_OFFICE_*` Script Properties are set, the D2 dry-run comparison ran clean, and "D2: Rename Old Mapping Tabs" retired the `Mappings_*` tabs to `ZZ_OLD_*`. The Production deployment was redeployed to pick up the new code — `clasp push` updates HEAD only, it does NOT re-pin the Production deployment, so a `clasp deploy -i <deployment-id>` was required for the web dashboard's sync path (now @30; rollback = same command with `--versionNumber 29`).
+- **D2 cutover COMPLETE (2026-08-11).** Back Office is the sole mapping source of truth. `buildMappingLookups()` reads from Back Office's `/api/mappings/all` (commit `5dee993`); the dashboard's own Mappings editor was retired (`4e30f0c`, the Mappings page is now a pointer card linking to `backoffice.pltheatrical.com/#/mappings`). The three `BACK_OFFICE_*` Script Properties are set, the D2 dry-run ran clean, and the `Mappings_*` tabs were renamed to `ZZ_OLD_*`.
+- **Dead-code cleanup DONE (2026-08-11, commit `35e251e`).** The in-sheet mapping tooling superseded by Back Office was removed (~1,677 lines): the mapping-sheet refresh/auto-match/dropdown/highlight/cleanup/onEdit helpers, the QBO master-list refreshers, the spent D2 dry-run/rename tools, and the dead WebAPI actions (`refreshTogglMappings`/`refreshQBOMasterLists`/`wireDropdowns`/`getQBOMasterOptions`) + the dashboard's "Refresh Data" page. Mappings.gs went 1611→126 lines. Verified against the full dependency graph — zero change to the sync path. Cosmetic side effect: `getTasksFromMappingSheet()` now returns empty (tab renamed), so the Sync_Log "Toggl Task" column is blank going forward; QBO postings are unaffected (service item resolves by task ID via Back Office).
+- **Settings page Save fixed (2026-08-11).** `apiSetConfig`'s allow-list was missing `BATCH_SIZE` and `QBO_ENV`, so clicking Save threw partway through and silently dropped every field after `BATCH_SIZE`. Both are now handled; `QBO_ENV` is routed to its authoritative store (Script Property, read by `getQBOEnvironment`), not the Config sheet — the environment dropdown is now functional and truthful. **Note:** the QBO Environment toggle is now a live prod↔sandbox switch from the dashboard (behind Cloudflare Access). If that's an unwanted footgun, make it read-only or add a confirm.
 - **No production sync observed through the new path yet.** First live Toggl→QBO sync after cutover should have its QBO TimeActivity records spot-checked against Back Office mappings before treating the path as proven.
-- **Decommission candidate (not blocking):** post-rename, `refreshTogglMappings()` and its Menu items (Refresh Toggl Mappings, Wire Dropdowns, Cleanup Orphaned Mappings, Apply Mapping Highlights) still target the old `Mappings_*` sheet names — running Refresh Toggl Mappings would recreate empty `Mappings_*` tabs nothing reads. `buildMappingLookupsFromSheets()` and `dryRunCompareMappingSources()` are now spent (they look sheets up by pre-rename names). Safe to leave; cleaner to remove.
+- **Deployment note:** `clasp push` updates HEAD only; it does NOT re-pin the Production deployment (`AKfycbwSEAEDqOrmBvgKhhxvHTkNwbbvY9ss...`) that the Worker/dashboard call. A `clasp deploy -i <deployment-id>` is required to promote HEAD to the web path. Current Production: @31 (dead-code cleanup) → will be @32 after the Settings fix. Rollback = same command with `--versionNumber <n>`.
 
 - Status: Active (Apps Script project). Phase 2 (Cloudflare Access migration) deployed and live — see WEB API KEY / AUTH.
 - QuickBooks/Toggl time sync via Google Apps Script
