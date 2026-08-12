@@ -2,6 +2,8 @@
 
 Test cases for validating the Toggl-QBO Sync system functionality.
 
+> **⚠️ Partial staleness (2026-08-11).** The Mapping Tests have been updated for the Back Office model (mappings are no longer in-sheet). However, several sections below (TC-SYN "Process Inbox → Queue" / "Sync Queue → QBO", TC-DUP "Skip Queued Entries", and any `Inbox_Approvals` / `Inbox` / `Queue` references) describe a **defunct Inbox/Queue architecture** that predates the current tag-based, `Sync_Log`-driven model — those steps and menu items no longer exist. They are retained pending a full rewrite of this suite. Treat anything mentioning Inbox or Queue as historical, not current.
+
 ## Prerequisites
 
 Before running tests:
@@ -152,67 +154,51 @@ function testImportAllUsers() {
 
 ## Mapping Tests
 
-### TC-MAP-001: Refresh Toggl Mappings
+> Mappings are owned by **Back Office** (`backoffice.pltheatrical.com/#/mappings`) as of the 2026-08 D2 cutover. The in-sheet mapping/refresh/auto-match/dropdown tooling (old TC-MAP-001..005) was removed — those tests no longer apply. Mapping *editing* is tested in Back Office's own suite; the tests below cover TimeSync's side: fetching and failing safe.
 
-**Objective**: Verify Toggl entity refresh
+### TC-MAP-001: Bulk mapping fetch succeeds
 
-**Steps**:
-1. Go to **Refresh Data > Refresh Toggl Mappings**
+**Objective**: Verify TimeSync fetches mappings from Back Office at sync start
 
-**Expected**:
-- Users appear in Mappings_Users
-- Clients appear in Mappings_Clients
-- Projects appear in Mappings_Projects
-- Tasks appear in Mappings_Tasks_Services
-
-### TC-MAP-002: Refresh QBO Master Lists
-
-**Objective**: Verify QBO entity refresh
+**Preconditions**:
+- `BACK_OFFICE_CF_ACCESS_CLIENT_ID`, `BACK_OFFICE_CF_ACCESS_CLIENT_SECRET`, `BACK_OFFICE_API_KEY` Script Properties set
+- Mappings exist in Back Office
 
 **Steps**:
-1. Go to **Refresh Data > Refresh QBO Master Lists**
+1. Run **Sync Operations > Preview Approved Entries** (or a sync)
+2. Check the execution log
 
 **Expected**:
-- Customers appear in QBO_Customers_Master
-- Employees appear in QBO_Employees_Master
-- Service items appear in QBO_Items_Service_Master
-- Projects appear in QBO_Projects_Master (if available)
+- Log line: `Mapping lookups fetched from Back Office: N users, N clients, N projects, N tasks`
+- Entries resolve to QBO employee/customer/service-item without "missing mapping" errors for mapped entities
 
-### TC-MAP-003: Smart Refresh (No Duplicates)
+### TC-MAP-002: Mapping fetch failure aborts safely
 
-**Objective**: Verify refresh doesn't create duplicates
+**Objective**: Verify a fetch failure aborts the run with no partial write
 
 **Steps**:
-1. Run **Refresh Toggl Mappings** twice
-2. Check mapping sheets
+1. Temporarily unset or corrupt one `BACK_OFFICE_*` Script Property
+2. Run **Sync Operations > Sync Approved Entries**
 
 **Expected**:
-- No duplicate entries
-- Existing mappings preserved
+- Run aborts before any QBO write; error `Sync aborted: ...`
+- Email to `philip@pltheatrical.com` describing the abort
+- Approved entries keep their "Approved" tag (no "Synced" tag added), so they sync on the next run once fixed
+- No new `Sync_Log` success rows, no new QBO TimeActivity records
 
-### TC-MAP-004: Auto-Match Users
+### TC-MAP-003: Default service item fallback
 
-**Objective**: Verify automatic user-to-employee matching
+**Objective**: Verify entries whose task has no Back Office mapping use the configured default
+
+**Preconditions**:
+- `DEFAULT_SERVICE_ITEM_ID` set in Config; an Approved entry whose task is unmapped
 
 **Steps**:
-1. Create QBO employee with same name as Toggl user
-2. Refresh mappings
+1. Sync the entry
 
 **Expected**:
-- Auto-match column shows "Yes"
-- QBO Employee populated automatically
-
-### TC-MAP-005: Dropdown Wiring
-
-**Objective**: Verify dropdown data validation
-
-**Steps**:
-1. Go to **Refresh Data > Wire Dropdowns**
-2. Check mapping sheet cells
-
-**Expected**:
-- Dropdowns show QBO entity names
-- Selecting name auto-fills ID (via formula)
+- Entry syncs using the default service item (log note: "Using default service item...")
+- With no default set, the entry fails with a clear "No QBO service item mapping" error instead
 
 ---
 
@@ -468,11 +454,9 @@ function testImportAllUsers() {
 
 ### Mapping Tests
 
-- [ ] TC-MAP-001: Refresh Toggl Mappings
-- [ ] TC-MAP-002: Refresh QBO Master Lists
-- [ ] TC-MAP-003: Smart Refresh (No Duplicates)
-- [ ] TC-MAP-004: Auto-Match Users
-- [ ] TC-MAP-005: Dropdown Wiring
+- [ ] TC-MAP-001: Bulk mapping fetch succeeds (Back Office)
+- [ ] TC-MAP-002: Mapping fetch failure aborts safely
+- [ ] TC-MAP-003: Default service item fallback
 
 ### Validation Tests
 

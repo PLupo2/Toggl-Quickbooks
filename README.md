@@ -1,25 +1,38 @@
 # Toggl Track → QuickBooks Online Time Sync
 
-A Google Apps Script system that syncs time entries from Toggl Track to QuickBooks Online as TimeActivity records, using a tag-based approval workflow.
+A Google Apps Script system that syncs time entries from Toggl Track to QuickBooks Online as TimeActivity records, using a tag-based approval workflow. Includes a standalone web dashboard at `timesync.pltheatrical.com`.
 
 ## Features
 
 - **OAuth 2.0 Authentication**: Secure connection to QuickBooks Online with automatic token refresh
 - **Tag-Based Workflow**: Tag entries with "Approved" in Toggl, sync to QBO, automatically get "Synced" tag
-- **Smart Mapping System**: Map Toggl entities (users, clients, projects, tasks) to QBO entities (employees, customers, sub-customers, service items)
+- **Centralized mappings (Back Office)**: Toggl↔QBO entity mappings (users→employees, clients→customers, projects→sub-customers, tasks→service items) live in **Back Office** (`backoffice.pltheatrical.com`), the single source of truth. TimeSync fetches them at sync time — see "Mappings" below.
 - **Sub-Customers as Projects**: Uses QBO sub-customers to represent projects (no paid developer tier required)
-- **Validation**: Automatically flag entries missing required mappings
-- **Deduplication**: Entries with "Synced" tag are skipped to prevent duplicates
-- **Name Resolution**: Display human-readable names everywhere (no raw IDs)
+- **Idempotency**: `Sync_Log` is the authority for "already synced"; the "Synced" tag is a review surface, not the dedup key
+- **Deduplication**: Entries already recorded in `Sync_Log` are skipped to prevent duplicates
 - **Environment Support**: Works with both QBO Sandbox and Production
 
 ## Data Flow
 
 ```
-Toggl Track (tag "Approved") → Google Sheets (sync) → QuickBooks Online
-                              ↓
-              Toggl Track (auto-adds "Synced" tag)
+Toggl Track (tag "Approved")
+      │
+      ▼
+Apps Script sync  ──fetch mappings──►  Back Office /api/mappings/all
+      │
+      ▼
+QuickBooks Online (TimeActivity)
+      │
+      ▼
+Toggl Track (auto-adds "Synced" tag)  +  Sync_Log row (dedup authority)
 ```
+
+## Architecture
+
+- **Runtime**: Google Apps Script bound to a Google Sheet (holds `Config` + `Sync_Log`)
+- **Mappings**: Back Office (FastAPI + SQLite), fetched by `buildMappingLookups()` in one bulk GET per run
+- **Web dashboard**: static site in `web/` (GitHub Pages), gated by Cloudflare Access, proxied through a Cloudflare Worker that injects the API secrets — see the "WEB API KEY / AUTH" section of `CLAUDE.md`
+- **APIs**: Toggl Track API v9 + Reports API v3; QuickBooks Online REST via OAuth 2.0
 
 ## Requirements
 
@@ -29,267 +42,155 @@ Toggl Track (tag "Approved") → Google Sheets (sync) → QuickBooks Online
 - QBO company (Sandbox for testing, Production for live use)
 
 ### Toggl Track
-- Toggl Track account with API access
-- API token from Profile settings
+- Toggl Track account with API access, API token from Profile settings
 - Workspace ID (auto-detected if not provided)
 
-## Quick Start
+### Back Office
+- Reachable at `backoffice.pltheatrical.com` with the Toggl↔QBO mappings maintained there
+- A scoped Cloudflare Access service token + Back Office API key for TimeSync (see Script Properties)
 
-### 1. Create the Google Apps Script Project
+## Setup
 
-1. Create a new Google Sheet
-2. Go to **Extensions > Apps Script**
-3. Delete the default `Code.gs` file
-4. Create 6 new script files and copy the contents:
-   - `Config.gs`
-   - `Auth.gs`
-   - `QuickBooks.gs`
-   - `Toggl.gs`
-   - `Mappings.gs`
-   - `Menu.gs`
+### 1. Apps Script project + Script Properties
 
-### 2. Configure Script Properties
+The `.gs` files at the repo root are the Apps Script project (deployed via `clasp`). Set these under **Project Settings > Script Properties**:
 
-Go to **Project Settings > Script Properties** and add:
+| Property | Description |
+|----------|-------------|
+| `TOGGL_API_TOKEN` | Toggl API token |
+| `TOGGL_WORKSPACE_ID` | Workspace ID (optional; auto-detected) |
+| `INTUIT_CLIENT_ID` / `INTUIT_CLIENT_SECRET` | QBO OAuth app credentials |
+| `OAUTH_REDIRECT_URI` | Web App deployment URL |
+| `QBO_REALM_ID` | Company ID (set after OAuth) |
+| `QBO_ENV` | `sandbox` or `production` (this is the authoritative environment switch; the dashboard Settings page reads/writes it here) |
+| `WORKER_SECRET` | Shared secret with the Cloudflare Worker (Phase 2 auth) |
+| `WEB_API_KEY` | Secondary API key (Phase 2 auth) |
+| `BACK_OFFICE_CF_ACCESS_CLIENT_ID` | Cloudflare Access service token (client id) for `/api/mappings/all` |
+| `BACK_OFFICE_CF_ACCESS_CLIENT_SECRET` | Cloudflare Access service token (client secret) |
+| `BACK_OFFICE_API_KEY` | Back Office API key (scoped to TimeSync) |
+| `BACK_OFFICE_MAPPINGS_URL` | Optional; defaults to `https://backoffice.pltheatrical.com/api/mappings/all` |
 
-| Property | Description | Example |
-|----------|-------------|---------|
-| `TOGGL_API_TOKEN` | Your Toggl API token | `abc123...` |
-| `TOGGL_WORKSPACE_ID` | Workspace ID (optional) | `1234567` |
-| `INTUIT_CLIENT_ID` | OAuth Client ID | `AB12cd...` |
-| `INTUIT_CLIENT_SECRET` | OAuth Client Secret | `xyz789...` |
-| `OAUTH_REDIRECT_URI` | Web App deployment URL | `https://script.google.com/...` |
-| `QBO_REALM_ID` | Company ID (set after OAuth) | `1234567890` |
-| `QBO_ENV` | Environment | `sandbox` or `production` |
+### 2. Deploy as Web App
 
-### 3. Deploy as Web App
+Deploy as a Web app (**Execute as: Me**, **Who has access: Anyone**) — required for the OAuth callback and the dashboard API. Copy the Web App URL to `OAUTH_REDIRECT_URI`. Note: `clasp push` updates HEAD only; promote to the live web path with `clasp deploy -i <deployment-id>`.
 
-1. Click **Deploy > New deployment**
-2. Select **Web app**
-3. Set **Execute as**: Me
-4. Set **Who has access**: Anyone (for OAuth callback)
-5. Copy the Web app URL to `OAUTH_REDIRECT_URI`
+### 3. Build sheets
 
-### 4. Set Up Sheets
+**Setup > Build All Sheets** creates `Config` and `Sync_Log` (the only sheets TimeSync owns; mappings are not in sheets).
 
-1. Reload your Google Sheet
-2. You should see the **Toggl-QBO Sync** menu
-3. Go to **Setup > Build All Sheets**
+### 4. Connect to QuickBooks
 
-### 5. Connect to QuickBooks
+**Setup > Connect to QuickBooks**, authorize with Intuit, then **Setup > Complete OAuth** if the callback doesn't complete automatically.
 
-1. Go to **Setup > Connect to QuickBooks**
-2. Click the authorization link
-3. Log in to Intuit and authorize the app
-4. If using the callback URL, authorization completes automatically
-5. Otherwise, copy the code and use **Setup > Complete OAuth**
+### 5. Maintain mappings in Back Office
 
-### 6. Refresh Data
+Open the dashboard's **Mappings** tab (or `backoffice.pltheatrical.com/#/mappings`) and map Toggl users/clients/projects/tasks to their QBO counterparts there. TimeSync reads these at sync time — there are no mapping sheets to edit.
 
-Go to **Refresh Data > Refresh All** to:
-- Pull QBO master lists (Customers, Employees, Service Items, Sub-Customers)
-- Pull Toggl mappings (Users, Clients, Projects, Tasks)
-- Wire dropdown menus
+### 6. Sync
 
-### 7. Configure Mappings
-
-Edit the mapping sheets to link Toggl entities to QBO:
-
-| Mapping Sheet | Purpose |
-|--------------|---------|
-| `Mappings_Users` | Toggl Users → QBO Employees |
-| `Mappings_Clients` | Toggl Clients → QBO Customers (top-level) |
-| `Mappings_Projects` | Toggl Projects → QBO Customers + Sub-Customers (projects) |
-| `Mappings_Tasks_Services` | Toggl Tasks → QBO Service Items |
-
-### 8. Create Tags and Sync
-
-1. **Maintenance > Ensure Tags Exist in Toggl** (creates Approved/Synced tags)
-2. In Toggl Track, add the "Approved" tag to entries you want to sync
-3. **Sync Operations > Preview Approved Entries** (see what will sync)
-4. **Sync Operations > Sync Approved Entries** (sync to QBO)
+1. In Toggl Track, add the "Approved" tag to entries you want to sync
+2. **Sync Operations > Preview Approved Entries** (see what will sync)
+3. **Sync Operations > Sync Approved Entries** (sync to QBO) — or use the dashboard's Sync page
 
 ## Tag-Based Workflow
 
-This system uses Toggl tags to manage the sync workflow:
-
 1. **Track Time**: Enter time in Toggl Track as usual
-2. **Approve**: When entries are ready to sync, add the "Approved" tag in Toggl
-3. **Sync**: Run "Sync Approved Entries" from the Google Sheet menu
-4. **Done**: The script syncs to QBO and adds "Synced" tag back to Toggl
+2. **Approve**: When entries are ready, add the "Approved" tag in Toggl
+3. **Sync**: Run "Sync Approved Entries" (Sheet menu or dashboard)
+4. **Done**: The script syncs to QBO, records a `Sync_Log` row, and adds the "Synced" tag back to Toggl
 
-Entries with the "Synced" tag are automatically skipped, preventing duplicates.
+`Sync_Log` is the dedup authority — an entry already recorded there is skipped, preventing duplicates. The "Synced" tag is kept as a Toggl-side review surface.
+
+## Mappings (Back Office)
+
+Toggl↔QBO mappings are owned by Back Office and fetched by `buildMappingLookups()` (Mappings.gs) in a single bulk GET per run:
+
+| Toggl entity | QBO entity |
+|--------------|------------|
+| User | Employee |
+| Client | Customer (top-level) |
+| Project | Sub-customer (project) |
+| Task | Service Item |
+
+On any fetch failure the run **aborts** (no partial run, no stale cache) and emails `philip@pltheatrical.com` — proceeding on stale mappings could post TimeActivity records against the wrong customer. Entries keep their "Approved" tag and sync on the next run once fixed.
+
+> Historical note: mappings used to live in in-sheet `Mappings_*` tabs edited from the Sheet/dashboard. That tooling was retired in the 2026-08 D2 cutover; the old tabs were renamed `ZZ_OLD_*` and are read by nothing.
 
 ## Sub-Customers as Projects
 
-Since the QBO Projects API requires a paid developer tier ($300/mo), this system uses a creative workaround:
-
-- **Top-level Customers** = Clients (used in `Mappings_Clients`)
-- **Sub-customers** = Projects (used in `Mappings_Projects`)
-
-To create a "project" in QBO:
-1. Go to QBO > Customers
-2. Create a new customer
-3. Check "Is sub-customer" and select the parent customer
-
-The `QBO_Projects_Master` sheet will list all sub-customers for mapping.
+Since the QBO Projects API requires a paid developer tier, projects are represented as **sub-customers**: top-level Customers = Clients, sub-customers = Projects. To create a project in QBO, create a customer and check "Is sub-customer" with the parent client selected.
 
 ## Sheet Structure
-
-### Working Sheets
 
 | Sheet | Purpose |
 |-------|---------|
 | `Config` | Key-value configuration storage |
-| `Sync_Log` | History of synced entries |
+| `Sync_Log` | History of synced entries; the dedup authority |
 
-### Mapping Sheets
-
-| Sheet | Columns |
-|-------|---------|
-| `Mappings_Clients` | Toggl Client ID/Name, QBO Customer ID/Name |
-| `Mappings_Projects` | Toggl Project ID/Name, Client Name, QBO Customer/Project (sub-customer) |
-| `Mappings_Users` | Toggl User ID/Name/Email, QBO Employee ID/Name |
-| `Mappings_Tasks_Services` | Toggl Task ID/Name, Project/Client Names, QBO Service Item ID/Name |
-
-### QBO Master Lists
-
-| Sheet | Purpose |
-|-------|---------|
-| `QBO_Customers_Master` | Top-level QBO Customers (clients) |
-| `QBO_Employees_Master` | QBO Employees |
-| `QBO_Items_Service_Master` | QBO Service Items |
-| `QBO_Projects_Master` | QBO Sub-customers (projects) |
+(`ZZ_OLD_Mappings_*` and `QBO_*_Master` tabs, if present, are retired artifacts — nothing reads them.)
 
 ## Menu Reference
 
 ### Sync Operations
-- **Preview Approved Entries**: Show entries that will be synced
-- **Sync Approved Entries**: Sync tagged entries to QBO
-- **Show Sync Status**: Display sync statistics
+- **Preview Approved Entries** / **Sync Approved Entries**
+- **Resume Pending Sync** / **Cancel Pending Sync**
+- **Show Sync Status**
 
 ### Setup
-- **Build All Sheets**: Create all required sheets
-- **Connect to QuickBooks**: Start OAuth flow
-- **Complete OAuth**: Finish OAuth with authorization code
-- **Disconnect QuickBooks**: Clear OAuth tokens
-- **Show Connection Status**: Display QBO connection info
-- **Show Toggl Status**: Display Toggl connection info
-- **Check QBO Projects Availability**: Show sub-customer (project) count
-
-### Refresh Data
-- **Refresh Toggl Mappings**: Pull users, clients, projects, tasks
-- **Refresh QBO Master Lists**: Pull customers, employees, items, sub-customers
-- **Refresh All**: Refresh everything and wire dropdowns
-- **Wire Dropdowns**: Add data validation to mapping sheets
+- **Build All Sheets** (Config + Sync_Log)
+- **Connect to QuickBooks** / **Complete OAuth** / **Disconnect QuickBooks**
+- **Show QBO Connection Status** / **Show Toggl Status**
 
 ### Settings
-- **Configure Date Range**: Set start/end dates or "last N days"
-- **Configure Tag Names**: Customize Approved/Synced tag names
-- **Show Current Settings**: View all current settings
+- **Configure Date Range**
 
 ### Maintenance
-- **Cleanup Orphaned Mappings**: Remove mappings for deleted Toggl entities
-- **View Sync Log**: Show sync history
-- **Clear Sync Log**: Reset sync log
-- **Ensure Tags Exist in Toggl**: Create workflow tags
-- **Debug: Customer Hierarchy**: Show all customers and sub-customers
+- **View Sync Log** / **Clear Sync Log**
+- **Check QBO Projects Availability**
+- **Sync Missing Config Keys**
+
+(The dashboard's **Settings** page covers sync behavior, tag names, default service item, API budget, and QBO environment.)
 
 ## Configuration Options
 
-Edit the `Config` sheet to adjust:
+Edit the `Config` sheet (or the dashboard Settings page):
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `IMPORT_DAYS` | 30 | Number of days to import (when no date range set) |
-| `START_DATE` | (empty) | Specific start date (YYYY-MM-DD) |
-| `END_DATE` | (empty) | Specific end date (YYYY-MM-DD) |
-| `APPROVED_TAG` | Approved | Tag name for entries ready to sync |
-| `SYNCED_TAG` | Synced | Tag name added after successful sync |
-| `SYNC_BILLABLE_ONLY` | FALSE | Only sync billable time |
+| `IMPORT_DAYS` | 30 | Days to import when no explicit range is set |
+| `START_DATE` / `END_DATE` | (empty) | Explicit date range (YYYY-MM-DD) |
+| `APPROVED_TAG` | Approved | Tag marking entries ready to sync |
+| `SYNCED_TAG` | Synced | Tag added after successful sync |
+| `TOGGL_API_BUDGET` | 180 | Max Toggl API calls per run (limit is 240/hr) |
+| `DEFAULT_SERVICE_ITEM_ID` | (empty) | Fallback QBO service item for entries whose task has no mapping |
+
+(`QBO_ENV` is a Script Property, not a Config-sheet value — set it in Script Properties or via the dashboard Settings page.)
 
 ## Validation Rules
 
-Entries must have:
-1. **Employee mapping** (required) - Toggl user must map to QBO employee
-2. **Customer mapping** (required) - Project or client must map to QBO customer
-3. **Service Item mapping** (required) - Task must map to QBO service item
-4. **Valid duration** - Must be greater than 0
-5. **Valid date** - Must have a date
-6. **Approved tag** - Must have the "Approved" tag in Toggl
-7. **No Synced tag** - Must NOT have the "Synced" tag (prevents duplicates)
+An entry syncs only if it has: an employee mapping (Toggl user → QBO employee), a customer mapping (client → QBO customer), a service-item mapping (task → QBO service item, or the configured default), a valid duration (> 0), a valid date, the "Approved" tag, and no existing `Sync_Log` success row.
 
 ## Troubleshooting
 
-### OAuth Issues
+### OAuth
+- **Invalid client_id / Redirect URI mismatch**: verify `INTUIT_CLIENT_ID`/`INTUIT_CLIENT_SECRET` and that `OAUTH_REDIRECT_URI` matches the Intuit app exactly (full `https://` URL).
+- **Token refresh failed**: re-authorize via **Setup > Connect to QuickBooks**.
 
-**"Invalid client_id"**
-- Verify `INTUIT_CLIENT_ID` in Script Properties
-- Check that your Intuit app is configured correctly
-
-**"Redirect URI mismatch"**
-- Ensure `OAUTH_REDIRECT_URI` matches exactly what's configured in your Intuit app
-- Include the full URL with `https://`
-
-**"Token refresh failed"**
-- Re-authorize: **Setup > Connect to QuickBooks**
-- Tokens expire after 100 days if not used
-
-### Sync Issues
-
-**"No entries found with Approved tag"**
-- Ensure entries have the "Approved" tag in Toggl
-- Check the date range in Settings
-- Run **Maintenance > Ensure Tags Exist in Toggl**
-
-**"Missing Employee mapping"**
-- Edit `Mappings_Users` to link the Toggl user to a QBO employee
-- Use the dropdown to select the employee
-
-**"Missing Customer mapping"**
-- Edit `Mappings_Projects` or `Mappings_Clients`
-- Link the Toggl project/client to a QBO customer
-
-**"Missing Service Item mapping"**
-- Edit `Mappings_Tasks_Services`
-- Link the Toggl task to a QBO service item
-
-**"QBO API Error: 400"**
-- Check that the employee/customer/item exist in QBO
-- Refresh master lists and try again
-
-### Projects (Sub-Customers)
-
-**QBO_Projects_Master is empty**
-- Create sub-customers in QBO (Customer > Is sub-customer)
-- Run **Refresh Data > Refresh All**
-- Run **Maintenance > Debug: Customer Hierarchy** to verify
+### Sync
+- **No entries found with Approved tag**: ensure entries carry the "Approved" tag and the date range covers them.
+- **Sync aborted — Back Office mapping fetch failed** (email): TimeSync couldn't reach `/api/mappings/all` or the credentials are missing/invalid. Check the `BACK_OFFICE_*` Script Properties and that Back Office is up; re-run after fixing (Approved entries are untouched).
+- **Missing employee/customer/service-item mapping**: add the mapping in Back Office (`backoffice.pltheatrical.com/#/mappings`), then re-run.
+- **QBO API Error 400**: confirm the employee/customer/item exist in QBO.
 
 ## Automated Triggers
 
-You can set up automated syncing:
-
-1. In Apps Script, go to **Triggers**
-2. Create a time-driven trigger for `syncApprovedEntries`
-3. Set to run daily at your preferred time
+Create a time-driven Apps Script trigger for `syncApprovedEntries` (e.g., daily). See `automatedSync` in Menu.gs.
 
 ## API Reference
 
-### Toggl Track
-- API v9: https://api.track.toggl.com/api/v9
-- Reports API v3: https://api.track.toggl.com/reports/api/v3
-
-### QuickBooks Online
-- Sandbox: https://sandbox-quickbooks.api.intuit.com
-- Production: https://quickbooks.api.intuit.com
+- Toggl Track: API v9 `https://api.track.toggl.com/api/v9`, Reports v3 `https://api.track.toggl.com/reports/api/v3`
+- QuickBooks Online: Sandbox `https://sandbox-quickbooks.api.intuit.com`, Production `https://quickbooks.api.intuit.com`
 
 ## License
 
-MIT License - Feel free to use and modify as needed.
-
-## Support
-
-For issues:
-1. Check the execution logs (**View > Executions** in Apps Script)
-2. Review the troubleshooting section above
-3. Verify all credentials and configurations
+MIT License.

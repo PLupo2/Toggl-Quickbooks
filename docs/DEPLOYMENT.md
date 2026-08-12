@@ -60,16 +60,16 @@ Before starting, ensure you have:
 ## Step 4: Add Script Files
 
 1. Delete the default `Code.gs` file
-2. Create these 8 files (File > New > Script):
+2. Create these script files (File > New > Script) and copy the contents from each source file:
    - `Config.gs`
    - `Auth.gs`
    - `QuickBooks.gs`
    - `Toggl.gs`
    - `Mappings.gs`
-   - `Queue.gs`
-   - `Inbox.gs`
    - `Menu.gs`
-3. Copy the contents from each source file
+   - `WebAPI.gs`
+
+   (`appsscript.json` is the manifest. In practice the project is deployed with `clasp push`, not hand-created.)
 
 ## Step 5: Configure Script Properties
 
@@ -83,7 +83,14 @@ Before starting, ensure you have:
 | `INTUIT_CLIENT_ID` | From Intuit Developer dashboard |
 | `INTUIT_CLIENT_SECRET` | From Intuit Developer dashboard |
 | `OAUTH_REDIRECT_URI` | Will set after deploying |
-| `QBO_ENV` | `sandbox` (for testing) or `production` |
+| `QBO_ENV` | `sandbox` (for testing) or `production` — authoritative environment switch |
+| `WORKER_SECRET` | Shared secret with the Cloudflare Worker (Phase 2 dashboard auth) |
+| `WEB_API_KEY` | Secondary API key (Phase 2 dashboard auth) |
+| `BACK_OFFICE_CF_ACCESS_CLIENT_ID` | Cloudflare Access service token (client id) for Back Office `/api/mappings/all` |
+| `BACK_OFFICE_CF_ACCESS_CLIENT_SECRET` | Cloudflare Access service token (client secret) |
+| `BACK_OFFICE_API_KEY` | Back Office API key, scoped to TimeSync |
+
+(`BACK_OFFICE_MAPPINGS_URL` is optional and defaults to the production endpoint. The `BACK_OFFICE_*` and Phase 2 auth properties are required for the mapping fetch and the web dashboard respectively — see `CLAUDE.md`.)
 
 ## Step 6: Deploy as Web App
 
@@ -130,22 +137,21 @@ Before starting, ensure you have:
 1. **Setup > Show QBO Connection Status** - Should show "Connected"
 2. **Setup > Show Toggl Status** - Should show "Connected"
 
-## Step 10: Refresh Data
+## Step 10: Maintain mappings in Back Office
 
-1. Go to **Refresh Data > Refresh All**
-2. This will:
-   - Pull QBO master lists
-   - Pull Toggl mappings
-   - Wire dropdown menus
+Toggl↔QBO mappings are owned by **Back Office** (`backoffice.pltheatrical.com/#/mappings`), not in-sheet. TimeSync fetches them at sync time via `buildMappingLookups()` (one bulk GET per run). Ensure the `BACK_OFFICE_*` Script Properties are set (Step 5) and that the users/clients/projects/tasks you sync are mapped in Back Office. There are no mapping sheets to build or refresh in this project.
+
+> Historical note: earlier versions maintained `Mappings_*` and `QBO_*_Master` sheets via a "Refresh Data" menu. That tooling was retired in the 2026-08 D2 cutover.
 
 ## Production Deployment
 
 When ready to switch from Sandbox to Production:
 
-1. Update `QBO_ENV` to `production` in Script Properties
+1. Update `QBO_ENV` to `production` in Script Properties (or via the dashboard Settings page — it writes the same Script Property)
 2. Clear existing tokens: **Setup > Disconnect QuickBooks**
 3. Re-authorize: **Setup > Connect to QuickBooks**
-4. Refresh data: **Refresh Data > Refresh All**
+4. Confirm the `BACK_OFFICE_*` properties point at the production Back Office and that mappings are complete there
+5. Promote the deployment: `clasp deploy -i <deployment-id>` (a plain `clasp push` updates HEAD only, not the pinned Production deployment the dashboard uses)
 
 ## Troubleshooting Deployment
 
