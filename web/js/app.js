@@ -375,7 +375,7 @@ const Pages = {
       // normal idle state. Reads persisted server state, not anything held
       // in this tab — a page reload picks the same job back up.
       const [preview, jobStatus] = await Promise.all([
-        API.get('previewApproved'),
+        API.get('previewApproved', {}, { retry: false }), // heavy read — no client abort/retry
         API.get('getSyncJobStatus')
       ]);
       Pages._syncPreview = preview;
@@ -492,7 +492,7 @@ const Pages = {
       // since this page loaded; without this the banner would incorrectly
       // disappear on a manual preview refresh while a sync is running.
       const [preview, jobStatus] = await Promise.all([
-        API.get('previewApproved', { startDate, endDate }),
+        API.get('previewApproved', { startDate, endDate }, { retry: false }), // heavy read — no client abort/retry
         API.get('getSyncJobStatus')
       ]);
       Pages._syncPreview = preview;
