@@ -1,5 +1,7 @@
 # Toggl Track → QuickBooks Online Time Sync
 
+> **Phase 3 backend migration in progress (started 2026-08-12, not live).** This README describes the Google Apps Script system, which is still what's actually running production. A FastAPI/Docker replacement is mid-build in `service/` — see the PHASE 3 section of `CLAUDE.md` for status and `~/Projects/stage-manager/state/timesync-handoff.json` for full build continuity detail. Nothing below is stale because of this — it's all accurate for the live system until cutover.
+
 A Google Apps Script system that syncs time entries from Toggl Track to QuickBooks Online as TimeActivity records, using a tag-based approval workflow. Includes a standalone web dashboard at `timesync.pltheatrical.com`.
 
 ## Features

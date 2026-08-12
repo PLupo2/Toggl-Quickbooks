@@ -1,5 +1,7 @@
 # Deployment Guide
 
+> **Phase 3 backend migration in progress (started 2026-08-12, not live yet).** This guide covers the Google Apps Script system, still the live one. See `CLAUDE.md`'s PHASE 3 section for the FastAPI/Docker replacement's status; a deployment guide for that system will replace this one at cutover.
+
 This guide walks through deploying the Toggl-QBO Sync system step by step.
 
 ## Prerequisites

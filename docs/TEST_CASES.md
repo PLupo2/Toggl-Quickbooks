@@ -1,5 +1,7 @@
 # TimeSync Smoke Test
 
+> **Phase 3 backend migration in progress (started 2026-08-12, not live yet).** This checklist targets the Google Apps Script system, still the live one — run it after any `clasp deploy`. The Phase 3 FastAPI/Docker build has its own verification discipline (real-data checks + a real browser render pass per phase) documented in the build's commits and `~/Projects/stage-manager/state/timesync-handoff.json`; a proper smoke checklist for that system will land around cutover.
+
 A short post-deploy checklist for the current architecture (tag-based sync,
 `Sync_Log` dedup authority, mappings fetched from Back Office, Cloudflare
 Access + Worker in front of the dashboard). Run the relevant rows after any
