@@ -110,7 +110,14 @@ def _get_sync_status(params):
 
 
 def _get_sync_job_status(params):
-    meta = sync_engine.get_sync_job_meta()
+    # jobId, when passed, looks up that exact job regardless of terminal
+    # state -- the no-id path only matches status IN ('running','paused'),
+    # so a poller tracking a specific job must pass it back or it loses the
+    # job the instant it completes (status flips out from under the no-id
+    # query, response becomes {status: idle, jobId: null}, and the caller's
+    # "a different job took over" guard silently stops polling before ever
+    # seeing the completion).
+    meta = sync_engine.get_sync_job_meta(job_id=params.get("jobId"))
     if not meta:
         return {"status": "idle", "jobId": None}
     return {

@@ -605,7 +605,12 @@ const Pages = {
 
       let status;
       try {
-        status = await API.get('getSyncJobStatus');
+        // Must pass jobId: the no-id query only matches running/paused jobs,
+        // so the instant this job completes the no-id form would return
+        // {status:'idle', jobId:null} and the jobId-mismatch guard below
+        // would bail before ever seeing the completed state (the frozen-
+        // progress-counter bug -- 2026-08-13).
+        status = await API.get('getSyncJobStatus', { jobId });
         firstFailureAt = null; // recovered
       } catch (err) {
         if (!firstFailureAt) firstFailureAt = Date.now();
