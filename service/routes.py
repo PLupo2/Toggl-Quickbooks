@@ -125,6 +125,7 @@ def _get_sync_job_status(params):
         "startedAt": meta["started_at"], "completedAt": meta["completed_at"],
         "synced": meta["total_synced"] or 0, "failed": meta["total_failed"] or 0,
         "alreadySynced": meta["total_already_synced"] or 0, "taggingFailed": meta["total_tagging_failed"] or 0,
+        "totalEntries": meta["total_entries"] or 0,
         "error": meta["error"], "pending": None,
     }
 

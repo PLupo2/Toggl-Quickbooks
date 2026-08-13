@@ -288,11 +288,19 @@ def sync_single_entry(entry, mappings):
 # MAIN SYNC (synchronous -- run in a background thread by the job wrapper)
 # ============================================================================
 
-def sync_approved_entries(force_entry_ids=None, on_progress=None):
-    """Fetches Approved-tagged entries, syncs unsynced ones to QBO,
-    incrementally tags Synced. Runs to full completion in this call --
-    budget exhaustion is handled by an in-process wait + counter reset (see
-    module docstring), not by returning early."""
+def sync_approved_entries(force_entry_ids=None, on_progress=None, on_start=None):
+    """Fetches Approved-tagged entries, syncs unsynced (or force-overridden)
+    ones to QBO, incrementally tags Synced. Runs to full completion in this
+    call -- budget exhaustion is handled by an in-process wait + counter
+    reset (see module docstring), not by returning early.
+
+    Scoping (2026-08-14): the walk is pre-filtered against Sync_Log's
+    already_synced_map before any mapping/lookup fetch happens, instead of
+    re-walking every Approved entry each click and skipping the already-
+    synced ones one at a time inside the loop. Sync_Log remains the sole
+    idempotency authority either way -- this only changes when it's
+    consulted (up front vs. per-entry), not what it guards. force_entry_ids
+    entries are still included even if already synced (D4 override)."""
     approved_tag = get_approved_tag_name()
     synced_tag = get_synced_tag_name()
     date_range = get_import_date_range()
@@ -303,13 +311,32 @@ def sync_approved_entries(force_entry_ids=None, on_progress=None):
 
     all_entries = toggl.fetch_time_entries_all_users(date_range["startDate"], date_range["endDate"])
 
-    entries_to_sync = [
+    approved_entries = [
         e for e in all_entries
         if any(t.lower() == approved_tag.lower() for t in resolve_entry_tags(e, tag_lookup))
     ]
 
+    already_synced_map = build_already_synced_map()
+    force_ids = parse_force_entry_ids(force_entry_ids)
+
+    def _entry_id(e):
+        return str(e.get("id") or e.get("time_entry_id"))
+
+    entries_to_sync = [
+        e for e in approved_entries
+        if _entry_id(e) not in already_synced_map or _entry_id(e) in force_ids
+    ]
+    already_synced_count = len(approved_entries) - len(entries_to_sync)
+
+    if on_start:
+        try:
+            on_start(len(entries_to_sync))
+        except Exception:
+            pass
+
     if not entries_to_sync:
-        return {"synced": 0, "failed": 0, "alreadySynced": 0, "taggingFailed": 0, "taggingErrors": [], "errors": []}
+        return {"synced": 0, "failed": 0, "alreadySynced": already_synced_count, "taggingFailed": 0,
+                "taggingErrors": [], "errors": []}
 
     toggl_lookups = toggl.build_toggl_lookups()
     mappings = back_office_client.build_mapping_lookups()  # aborts (raises) on failure, by design
@@ -325,10 +352,7 @@ def sync_approved_entries(force_entry_ids=None, on_progress=None):
             if tid.isdigit():
                 toggl_lookups["tasks"][int(tid)] = name
 
-    already_synced_map = build_already_synced_map()
-    force_ids = parse_force_entry_ids(force_entry_ids)
-
-    results = {"synced": 0, "failed": 0, "alreadySynced": 0, "taggingFailed": 0,
+    results = {"synced": 0, "failed": 0, "alreadySynced": already_synced_count, "taggingFailed": 0,
                "taggingErrors": [], "errors": [], "syncedEntryIds": []}
     untagged_synced_ids = []
 
@@ -336,14 +360,7 @@ def sync_approved_entries(force_entry_ids=None, on_progress=None):
         entry_id = entry.get("id") or entry.get("time_entry_id")
         try:
             processed = process_time_entry(entry, toggl_lookups)
-            existing = already_synced_map.get(str(processed["togglEntryId"]))
             is_override = str(processed["togglEntryId"]) in force_ids
-
-            if existing and not is_override:
-                results["alreadySynced"] += 1
-                log_sync_result(processed, existing.get("qboId", ""), "Already synced", "")
-                _progress(on_progress, results)
-                continue
 
             # Budget wait: in-process, not a save-state-and-relaunch. Toggl's
             # real limit resets on a rolling basis; a flat 65-minute wait
@@ -390,7 +407,10 @@ def sync_approved_entries(force_entry_ids=None, on_progress=None):
 
 
 def _progress(on_progress, results):
-    if on_progress and (results["synced"] + results["failed"] + results["alreadySynced"]) % 5 == 0:
+    # alreadySynced is now a fixed precomputed count (entries_to_sync already
+    # excludes them), not incremented per-entry -- the throttle only needs to
+    # track the two counters that actually move during the loop.
+    if on_progress and (results["synced"] + results["failed"]) % 5 == 0:
         try:
             on_progress(results["synced"], results["failed"], results["alreadySynced"])
         except Exception:
@@ -450,8 +470,11 @@ def _run_sync_job(job_id, force_entry_ids):
     def on_progress(synced, failed, already_synced):
         _save_sync_job_meta(job_id, total_synced=synced, total_failed=failed, total_already_synced=already_synced)
 
+    def on_start(total):
+        _save_sync_job_meta(job_id, total_entries=total)
+
     try:
-        result = sync_approved_entries(force_entry_ids=force_entry_ids, on_progress=on_progress)
+        result = sync_approved_entries(force_entry_ids=force_entry_ids, on_progress=on_progress, on_start=on_start)
         _save_sync_job_meta(
             job_id, status="completed", completed_at=datetime.now(timezone.utc).isoformat(),
             total_synced=result["synced"], total_failed=result["failed"],

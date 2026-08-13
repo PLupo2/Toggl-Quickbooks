@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 # Starlette's base HTTPException, NOT fastapi.exceptions.HTTPException -- in
 # this FastAPI/Starlette version they are DIFFERENT classes (fastapi's is a
 # subclass). StaticFiles' internal 404 raises the Starlette one directly;
@@ -37,6 +38,26 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+class NoCacheStaticMiddleware(BaseHTTPMiddleware):
+    """A 2026-08-13 deploy served stale UI for hours because Cloudflare's edge
+    cache (max-age=14400, keyed by file extension) kept serving pre-fix
+    app.js after a new version was already deployed and live-verified at the
+    origin. This forces Cloudflare and browsers to revalidate on every
+    request instead of trusting the edge TTL -- StaticFiles still sets
+    ETag/Last-Modified, so a revalidated-but-unchanged asset is still a cheap
+    304, not a full refetch. Excludes /api and /health, which were never
+    cached by extension and don't need the header."""
+
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        if not request.url.path.startswith("/api") and request.url.path != "/health":
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.add_middleware(NoCacheStaticMiddleware)
 
 
 @app.get("/health")

@@ -647,9 +647,15 @@ const Pages = {
         return;
       }
 
-      const progress = status.pending
-        ? `${status.synced} synced, ${status.pending.pendingEntries} pending — paused for rate limit, resumes automatically`
-        : `${status.synced} synced so far...`;
+      // totalEntries is set once the job's walk is known (after the initial
+      // Toggl fetch + already-synced filter) -- a poll landing before that
+      // shows a generic starting message rather than "X of 0".
+      const processedCount = status.synced + status.failed;
+      const progress = !status.totalEntries
+        ? 'Starting sync…'
+        : status.pending
+          ? `${processedCount} of ${status.totalEntries} processed, ${status.pending.pendingEntries} pending — paused for rate limit, resumes automatically`
+          : `${processedCount} of ${status.totalEntries} processed`;
       Pages._setSyncProgressText(progress);
 
       await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
