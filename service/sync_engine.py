@@ -22,6 +22,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import alerts
 import back_office_client
 import qbo_client
 from db import get_db, get_setting, set_setting
@@ -480,8 +481,17 @@ def _run_sync_job(job_id, force_entry_ids):
             total_synced=result["synced"], total_failed=result["failed"],
             total_already_synced=result["alreadySynced"], total_tagging_failed=result.get("taggingFailed", 0),
         )
+        tagging_failed = result.get("taggingFailed", 0)
+        if result["failed"] > 0 or tagging_failed > 0:
+            alerts.discord_alert(
+                "TimeSync: sync completed with issues",
+                f"Job {job_id}: {result['synced']} synced, {result['failed']} failed, "
+                f"{result['alreadySynced']} already synced, {tagging_failed} tagging failures.\n"
+                f"Check the Sync Log at https://timesync.pltheatrical.com/ for details.",
+            )
     except Exception as e:
         _save_sync_job_meta(job_id, status="failed", completed_at=datetime.now(timezone.utc).isoformat(), error=str(e))
+        alerts.discord_alert("TimeSync: sync job failed", f"Job {job_id} crashed: {e}")
 
 
 def mark_orphaned_jobs_failed():

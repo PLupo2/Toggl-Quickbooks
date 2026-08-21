@@ -18,6 +18,9 @@ services:
       - /Users/pltheatrical2/secrets/timesync_cf_client_id.txt:/run/secrets/timesync_cf_client_id.txt:ro
       - /Users/pltheatrical2/secrets/timesync_cf_client_secret.txt:/run/secrets/timesync_cf_client_secret.txt:ro
       - /Users/pltheatrical2/secrets/back_office_timesync_api_key.txt:/run/secrets/back_office_timesync_api_key.txt:ro
+      # Discord #ops failure alerts (service/alerts.py) -- same webhook
+      # plt-core and gusto-ynab-sync already post to.
+      - /Users/pltheatrical2/secrets/discord_ops_webhook.txt:/run/secrets/discord_ops_webhook.txt:ro
     environment:
       - DB_PATH=/data/timesync.db
       - SECRETS_DIR=/run/secrets

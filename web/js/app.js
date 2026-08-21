@@ -666,6 +666,73 @@ const Pages = {
   // Sync Log — Grouped by sync job
   // ---------------------------------------------------------------------------
   _logExpanded: {},
+  _logFilters: { startDate: '', endDate: '', status: '', user: '', client: '' },
+
+  _logFiltersActive() {
+    const f = Pages._logFilters;
+    return !!(f.startDate || f.endDate || f.status || f.user || f.client);
+  },
+
+  _renderLogFilterBar() {
+    const f = Pages._logFilters;
+    return `
+      <div class="card" style="margin-bottom:16px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr 1fr auto;gap:12px;align-items:end">
+          <div class="form-group" style="margin-bottom:0">
+            <label>Start Date</label>
+            <input type="date" id="log-startDate" value="${f.startDate}">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label>End Date</label>
+            <input type="date" id="log-endDate" value="${f.endDate}">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label>User</label>
+            <input type="text" id="log-user" placeholder="e.g. Kailey" value="${f.user}">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label>Client</label>
+            <input type="text" id="log-client" placeholder="e.g. REN" value="${f.client}">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label>Status</label>
+            <select id="log-status">
+              <option value="" ${!f.status ? 'selected' : ''}>All</option>
+              <option value="Success" ${f.status === 'Success' ? 'selected' : ''}>Success</option>
+              <option value="Failed" ${f.status === 'Failed' ? 'selected' : ''}>Failed</option>
+              <option value="Already synced" ${f.status === 'Already synced' ? 'selected' : ''}>Already synced</option>
+            </select>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary" onclick="Pages.applyLogFilters()">Apply</button>
+            ${Pages._logFiltersActive() ? '<button class="btn" onclick="Pages.clearLogFilters()">Clear</button>' : ''}
+          </div>
+        </div>
+      </div>`;
+  },
+
+  _initLogFilterPickers() {
+    if (typeof flatpickr !== 'undefined') {
+      flatpickr('#log-startDate', { dateFormat: 'Y-m-d', locale: { firstDayOfWeek: 1 } });
+      flatpickr('#log-endDate', { dateFormat: 'Y-m-d', locale: { firstDayOfWeek: 1 } });
+    }
+  },
+
+  applyLogFilters() {
+    Pages._logFilters = {
+      startDate: document.getElementById('log-startDate').value,
+      endDate: document.getElementById('log-endDate').value,
+      user: document.getElementById('log-user').value.trim(),
+      client: document.getElementById('log-client').value.trim(),
+      status: document.getElementById('log-status').value,
+    };
+    Pages.log();
+  },
+
+  clearLogFilters() {
+    Pages._logFilters = { startDate: '', endDate: '', status: '', user: '', client: '' };
+    Pages.log();
+  },
 
   async log() {
     const _rt = App.renderToken;
@@ -673,11 +740,21 @@ const Pages = {
     content.innerHTML = '<div style="text-align:center;padding:40px"><div class="spinner"></div> Loading sync log...</div>';
 
     try {
-      const data = await API.get('getSyncLog', { limit: '200' });
+      const f = Pages._logFilters;
+      const params = { limit: '200' };
+      if (f.startDate) params.startDate = f.startDate;
+      if (f.endDate) params.endDate = f.endDate;
+      if (f.status) params.status = f.status;
+      if (f.user) params.user = f.user;
+      if (f.client) params.client = f.client;
+
+      const data = await API.get('getSyncLog', params);
+      const filterBarHtml = Pages._renderLogFilterBar();
 
       if (data.entries.length === 0) {
         if (Pages._stale(_rt)) return;
-        content.innerHTML = '<div class="card"><p>No sync log entries yet.</p></div>';
+        content.innerHTML = `${filterBarHtml}<div class="card"><p>No sync log entries ${Pages._logFiltersActive() ? 'match these filters.' : 'yet.'}</p></div>`;
+        Pages._initLogFilterPickers();
         return;
       }
 
@@ -709,6 +786,7 @@ const Pages = {
           const entryDate = formatLogDate(e['Date']);
           // Duration - handle spreadsheet date serialization (1899-12-30 epoch) or formatted strings
           const duration = formatLogDuration(e['Duration']);
+          const fixLink = mappingErrorLink(e['Error']);
           return `
             <tr>
               <td>${entryDate}</td>
@@ -718,7 +796,10 @@ const Pages = {
               <td>${e['Description'] || ''}</td>
               <td>${duration}</td>
               <td><span class="badge ${statusClass}">${e['Status']}</span></td>
-              <td style="color:var(--danger);font-size:12px">${e['Error'] || ''}</td>
+              <td style="color:var(--danger);font-size:12px">
+                ${e['Error'] || ''}
+                ${fixLink ? `<br><a href="${fixLink}" target="_blank" rel="noopener">Fix in Back Office →</a>` : ''}
+              </td>
             </tr>`;
         }).join('');
 
@@ -741,10 +822,12 @@ const Pages = {
 
       if (Pages._stale(_rt)) return;
       content.innerHTML = `
+        ${filterBarHtml}
         <div class="card">
-          <div class="card-title">${data.total} Total Entries in ${groupKeys.length} Sync Jobs</div>
+          <div class="card-title">${data.total} ${Pages._logFiltersActive() ? 'Matching' : 'Total'} Entries in ${groupKeys.length} Sync Jobs</div>
           ${groupsHtml}
         </div>`;
+      Pages._initLogFilterPickers();
     } catch (err) {
       if (Pages._stale(_rt)) return;
       content.innerHTML = `<div class="card"><p style="color:var(--danger)">Error: ${err.message}</p></div>`;
@@ -1009,6 +1092,26 @@ function formatDateTimeET(isoString) {
   } catch (e) {
     return isoString;
   }
+}
+
+/**
+ * Maps a sync_log "Error" string to a Back Office deep link, by matching the
+ * fixed prefixes resolve_sync_mappings (service/sync_engine.py) always uses
+ * for the three unmapped-entity failure cases. Type-level only -- Back
+ * Office's Mappings page doesn't yet support scrolling to a specific row.
+ */
+function mappingErrorLink(errorText) {
+  if (!errorText) return null;
+  if (errorText.startsWith('No QBO employee mapping for Toggl user:')) {
+    return 'https://backoffice.pltheatrical.com/#/mappings/users';
+  }
+  if (errorText.startsWith('No QBO customer mapping for client:')) {
+    return 'https://backoffice.pltheatrical.com/#/clients';
+  }
+  if (errorText.startsWith('No QBO service item mapping for task:')) {
+    return 'https://backoffice.pltheatrical.com/#/mappings/tasks';
+  }
+  return null;
 }
 
 /**

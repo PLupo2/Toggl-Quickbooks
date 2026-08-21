@@ -144,10 +144,33 @@ SYNC_LOG_COLS = [
 
 def _get_sync_log(params):
     limit = int(params.get("limit") or 50)
+
+    # Optional filters -- all narrow the same result set the grouped Sync Log
+    # page renders, so `total` below reflects the filtered count, not the
+    # grand total, once any filter is active.
+    where, args = [], []
+    if params.get("startDate"):
+        where.append("date >= ?")
+        args.append(params["startDate"])
+    if params.get("endDate"):
+        where.append("date <= ?")
+        args.append(params["endDate"])
+    if params.get("status"):
+        where.append("status = ?")
+        args.append(params["status"])
+    if params.get("user"):
+        where.append("toggl_user LIKE ?")
+        args.append(f"%{params['user']}%")
+    if params.get("client"):
+        where.append("toggl_client LIKE ?")
+        args.append(f"%{params['client']}%")
+    where_clause = f"WHERE {' AND '.join(where)}" if where else ""
+
     conn = get_db()
-    total = conn.execute("SELECT COUNT(*) c FROM sync_log").fetchone()["c"]
+    total = conn.execute(f"SELECT COUNT(*) c FROM sync_log {where_clause}", args).fetchone()["c"]
     rows = conn.execute(
-        f"SELECT {','.join(SYNC_LOG_COLS)} FROM sync_log ORDER BY id DESC LIMIT ?", (limit,)
+        f"SELECT {','.join(SYNC_LOG_COLS)} FROM sync_log {where_clause} ORDER BY id DESC LIMIT ?",
+        (*args, limit),
     ).fetchall()
     conn.close()
     entries = []
