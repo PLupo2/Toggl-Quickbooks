@@ -2,74 +2,22 @@
 
 Syncs time entries from Toggl Track to QuickBooks Online as TimeActivity records, using a tag-based approval workflow. Web UI at timesync.pltheatrical.com.
 
-**Two systems currently exist in this repo.** The Google Apps Script system below is LIVE — it is what's actually serving production traffic right now. A FastAPI replacement (`service/`) is mid-build under Phase 3 (see PHASE 3 section) and is NOT live — no cutover has happened, nothing about the live system has changed. Read this whole file before touching either.
+**One system exists in this repo now.** The FastAPI service (`service/`) is what serves production traffic. The Google Apps Script system that preceded it (described in Phase 3 history below) was demolished 2026-09-03 — see "LEGACY SYSTEM — DEMOLISHED" below for exactly what was removed and what wasn't.
 
-## OUTGOING SYSTEM — Google Apps Script (RETIRED from live traffic 2026-08-13; dormant for the 3.7 window, then demolition)
+## LEGACY SYSTEM — DEMOLISHED 2026-09-03
 
-### Architecture
-- **Runtime**: Google Apps Script (bound to a Google Sheet)
-- **APIs**: Toggl Track API v9, QuickBooks Online REST API via OAuth 2.0
-- **Web UI**: Static HTML/CSS/JS deployed via GitHub Pages
-- **Source control**: GitHub (PLupo2/Toggl-Quickbooks), clasp mirror for Apps Script deployment
-- **CI**: GitHub Actions for Pages deployment
+The original Google Apps Script system (bound to a Google Sheet, Toggl Track API v9 + QBO REST via OAuth, web UI on GitHub Pages, Cloudflare Worker proxying `/api/*`) was retired from live traffic 2026-08-13 (Phase 3.5 cutover) and demolished after the Phase 3.6/3.7 burn-in + dormancy window. Removed from this repo and from Cloudflare/GitHub:
+- All root-level Apps Script source: `Auth.gs`, `Config.gs`, `Mappings.gs`, `Menu.gs`, `QuickBooks.gs`, `Toggl.gs`, `WebAPI.gs`, `appsscript.json`
+- clasp project files: `.clasp.json` (scriptId `1Ttcjyi8ddzMK8mQUpzPooeaT3zt6JowdrNGzQEuFwuy9g9ItHcDtWyiy`, not deleted from Google Drive/Apps Script itself — only the local clasp mirror), `.claspignore`
+- `worker/` directory (Cloudflare Worker source, `timesync-api-proxy`) and the deployed Worker script itself (deleted from Cloudflare via API)
+- `.github/workflows/deploy-pages.yml` (GitHub Actions Pages deployment), and GitHub Pages was disabled on the repo (`PLupo2/Toggl-Quickbooks`)
+- A final in-flight change (Back Office preflight-corrections check, `Toggl.gs`/`WebAPI.gs`) was committed to git history before deletion so the work isn't lost even though the files are gone.
 
-### Key files
-```
-(root — Apps Script files, clasp rootDir)
-  Auth.gs           — OAuth 2.0 flow for QuickBooks Online
-  Config.gs         — Configuration and script properties
-  Mappings.gs       — Mapping lookup: single bulk GET from Back Office per run
-                      (buildMappingLookups + abort handler). Post-D2 the
-                      in-sheet mapping editor/refresh tooling was removed.
-  Menu.gs           — Google Sheets custom menu
-  QuickBooks.gs     — QBO API client
-  Toggl.gs          — Toggl Track API client + sync engine
-  WebAPI.gs         — Web app endpoint (doGet/doPost: OAuth callback + dashboard API)
-  appsscript.json   — Apps Script manifest (webapp deployment)
-web/
-  index.html, css/styles.css, js/api.js, js/app.js, favicon.svg, logo.svg, CNAME
-  (this directory is UNCHANGED and reused as-is by the Phase 3 FastAPI service — see below)
-docs/
-  DEPLOYMENT.md, OAUTH_SETUP.md, TEST_CASES.md
-worker/
-  src/index.js, wrangler.toml, README.md — Cloudflare Worker proxying /api/* (Phase 2)
-```
+**Explicitly NOT removed, because both are live production for the current FastAPI system, not legacy:**
+- `web/` — the static UI directory. It was originally built for GitHub Pages, but Phase 3 repointed the FastAPI service to serve it directly (`service/app.py` mounts `web/` as static files) rather than porting it. It is the live UI today.
+- The Cloudflare Access app named "TimeSync" (`8eddb196-3382-425c-85e3-15dc49f4bfc2`, hostname-scoped to `timesync.pltheatrical.com`) — this is the same Access app that gated the old system and now gates the live FastAPI service; there was never a separate legacy-only policy.
 
-### Data flow
-```
-Toggl Track (tag "Approved") → Google Sheets (sync) → QuickBooks Online
-                              ↓
-              Toggl Track (auto-adds "Synced" tag)
-```
-
-### Build and deploy
-```bash
-clasp pull   # pull current Apps Script state
-clasp push   # after editing .gs files locally
-# Web UI: git push triggers GitHub Actions → GitHub Pages (no clasp needed)
-```
-`clasp push` updates HEAD only — it does NOT re-pin the Production deployment (`AKfycbwSEAEDqOrmBvgKhhxvHTkNwbbvY9ss...`) that the Worker/dashboard call. `clasp deploy -i <deployment-id> -d "<desc>"` promotes HEAD to the web path. **Current Production: @33.** Rollback = same command with `--versionNumber <n>`. clasp auth: a plain `clasp login` reports "already logged in" off the stale `~/.clasprc.json` without re-testing — if pushes fail with `invalid_grant`/`invalid_rapt`, run `clasp logout` then `clasp login`, verify with `clasp versions`.
-
-### Key concepts
-- **Tag-based workflow**: "Approved" tag in Toggl → sync to QBO → "Synced" tag added back
-- **Entity mapping**: Toggl users→QBO employees, clients→QBO customers, projects→QBO sub-customers, tasks→QBO service items — all sourced from Back Office (`backoffice.pltheatrical.com`), not in-sheet, since the D2 cutover
-- **Sub-customers as projects**: avoids the $300/mo QBO Projects API tier
-- **Deduplication**: `Sync_Log` is the sole idempotency authority (not the Toggl "Synced" tag, which is cosmetic/review-only)
-
-### Web API key / auth (Phase 2 — Cloudflare Access)
-```
-Browser → Cloudflare Access (@pltheatrical.com email OTP, gates the whole zone)
-        → Cloudflare Worker (worker/src/index.js, holds secrets server-side)
-        → Apps Script WebAPI.gs (validates origin_secret + api_key, ANYONE_ANONYMOUS but fails closed)
-```
-Browser holds no secret — only an Access session cookie. Apps Script's `doGet`/`doPost` can't read arbitrary headers, so the Worker's `origin_secret` travels as a request param (`validateOrigin()` in WebAPI.gs), not a literal header, despite the original spec describing one. Fully deployed and live since 2026-08-05. `plupo2.github.io` (GitHub Pages' own domain) bypasses Access entirely — accepted, since the frontend holds no secrets and its relative `/api/*` calls fail off-domain there.
-
-### Known issues (live system)
-- **D2 cutover COMPLETE (2026-08-11).** Back Office is the sole mapping source of truth (`5dee993`); dashboard's own Mappings editor retired (`4e30f0c`, now a pointer card to Back Office). `Mappings_*` sheet tabs renamed to `ZZ_OLD_*`.
-- **Dead-code cleanup DONE (2026-08-11, `35e251e`).** ~1,677 lines of superseded in-sheet mapping tooling removed. Mappings.gs 1611→126 lines.
-- **Toggl task names + live sync progress + Settings Save fix** — all shipped 2026-08-11 (`b2c2dd2`, Settings fix same day). Details in spec doc changelog.
-- **Transient "Upstream returned non-JSON (HTTP 404)" — expected, mitigated (2026-08-12, `36ebd71`).** Apps Script's `/exec` intermittently 302-redirects to a stale `googleusercontent.com` URL. NOT an outage; verify with `curl -sL "<APPS_SCRIPT_URL>?action=getConfig"` → JSON 401 = healthy. **This exact failure mode is the reason Phase 3 exists** — see below.
-- **First production sync verified (2026-08-11, date 08/06).** 19 TimeActivity records cross-checked clean against Back Office + Toggl.
+`docs/` (`DEPLOYMENT.md`, `OAUTH_SETUP.md`, `TEST_CASES.md`) documents the old system and was left in place as historical reference, not deleted.
 
 ## PHASE 3 — FastAPI on the Mac Mini (LIVE — serving timesync.pltheatrical.com since 2026-08-13)
 
@@ -115,7 +63,8 @@ Browser holds no secret — only an Access session cookie. Apps Script's `doGet`
 
   </details>
 
-- 🟡 **3.6 IN PROGRESS (burn-in window started 2026-08-13, ~23:36 EDT).** Rollback lever (step 7 above) stays armed for the duration. Watchlist: recurrence of the transient `getSyncJobStatus` 401 seen at 03:28:02 UTC. → 3.7 two-week dormancy then demolition of the Apps Script/Worker/Pages system.
+- ✅ **3.6 burn-in COMPLETE** (window started 2026-08-13 ~23:36 EDT). No recurrence of the transient `getSyncJobStatus` 401 during burn-in.
+- ✅ **3.7 demolition COMPLETE (2026-09-03).** Apps Script source, clasp files, `worker/`, the deployed Cloudflare Worker script, and the GitHub Pages workflow/site were all removed — see "LEGACY SYSTEM — DEMOLISHED" near the top of this file for the full list. Phase 3 (all 7 steps) is now fully closed out.
 
 **Note on handoff files:** `~/Projects/stage-manager/state/timesync-handoff.json` has been observed getting cleared/consumed automatically (twice now, not always tied to an explicit restart mention) — treat it as a single-use aid for an imminent restart, NOT a durable record. This CLAUDE.md file, committed to git, is the durable source of truth for Phase 3 continuity.
 
@@ -138,19 +87,18 @@ routes.py           — all 11 actions behind a SINGLE /api endpoint (action as 
 scheduler.py        — built, deliberately NOT wired into app.py — inert until Phase 3's scheduler is enabled
 import_sync_log.py  — one-time Sheet-export → timesync.db import (already run for the initial 3,200 rows)
 ```
-Container: `docker-compose up -d --build` from the repo root. `./data/timesync.db` and `~/secrets/*` are mounted, both gitignored (real business data / credentials, never committed). Currently reachable only at `localhost:5175` — not yet behind Cloudflare, not yet publicly routable.
+Container: `docker-compose up -d --build` from the repo root. `./data/timesync.db` and `~/secrets/*` are mounted, both gitignored (real business data / credentials, never committed). Live and publicly routable at `timesync.pltheatrical.com` since the 2026-08-13 cutover (port 5175 is the local/tunnel-internal address, not directly exposed).
 
 ## SPEC DOC
 - Doc ID: `1AKjumu4V-Kqqp3z4CBjyFiKiwm5iFGV_HJVBCxvjEuM` ("Toggl-QuickBooks Sync — Spec & Changelog"). Phase 2 (2026-07-13), D2 cutover + cleanup (2026-08-11), root-cause diagnosis + Phase 3 approval (2026-08-12) all recorded there.
 
 ## CONVENTIONS
-- Apps Script files at repo root (clasp rootDir `.`); Phase 3 service code under `service/`; both currently coexist
-- `web/` is shared, unchanged, between both systems
+- Service code lives under `service/`; `web/` is the static UI, served directly by `service/app.py` (no separate frontend deploy pipeline)
 - THE MAC MINI IS THE PRIMARY AND ONLY DEVELOPMENT PATH for this repo. MacBook is last resort only (physically-impossible-elsewhere tasks).
-- TimeSync is actively used in production (real payroll-adjacent QBO writes) — changes are deliberate and verified before deploy. Phase 3 build discipline: verify every module against real live data, do a real browser check before trusting API-level tests alone, stop for explicit review at every phase boundary.
+- TimeSync is actively used in production (real payroll-adjacent QBO writes) — changes are deliberate and verified before deploy. Verify modules against real live data, do a real browser check before trusting API-level tests alone.
 
 ## MODEL ROUTING
-- L1 for config changes, menu items, CSS tweaks
+- L1 for config changes, CSS tweaks
 - L2 for mapping logic, sync workflow, API client changes
-- L3 for OAuth flow changes, web UI architecture changes, or Phase 3 service work
-- Opus for changes touching both Apps Script and web UI simultaneously, or any Phase 3 cutover step
+- L3 for auth flow changes or web UI architecture changes
+- Opus for changes touching both the sync engine and web UI simultaneously, or infrastructure/cutover-scale changes
