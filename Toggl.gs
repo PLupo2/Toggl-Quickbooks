@@ -1434,6 +1434,38 @@ function syncApprovedEntries(options = {}) {
     return { synced: 0, failed: 0, alreadySynced: 0 };
   }
 
+  // Preflight: warn if any approved entries have unresolved corrections in
+  // Back Office (no_task, unknown_project) that would cause the QBO push to
+  // write incomplete data. Non-blocking — a failure or dismissal proceeds.
+  if (!options.fromWebApi) {
+    const entryIds = entriesToSync.map(e => e.id);
+    const preflight = checkPreflightCorrections(entryIds);
+    if (preflight && preflight.total_flagged > 0) {
+      const parts = Object.keys(preflight.by_reason).map(
+        reason => `  • ${reason}: ${preflight.by_reason[reason]}`
+      );
+      try {
+        const ui = SpreadsheetApp.getUi();
+        const response = ui.alert(
+          'Unresolved Corrections',
+          `${preflight.total_flagged} of ${entriesToSync.length} approved entries have ` +
+          `unresolved corrections in Back Office:\n\n` +
+          parts.join('\n') + '\n\n' +
+          'These entries may sync with incomplete data (missing task or project). ' +
+          'Resolve them at:\n' + preflight.corrections_url + '\n\n' +
+          'Continue syncing anyway?',
+          ui.ButtonSet.YES_NO
+        );
+        if (response === ui.Button.NO) {
+          logMessage(`Sync cancelled by user: ${preflight.total_flagged} entries with corrections`, 'INFO');
+          return { synced: 0, failed: 0, alreadySynced: 0, cancelledByPreflight: true };
+        }
+      } catch (e) {
+        logMessage(`Preflight UI prompt unavailable, proceeding: ${e.message}`, 'WARN');
+      }
+    }
+  }
+
   // Build lookups for Toggl data (uses cache, reads tasks from sheet)
   const togglLookups = buildTogglLookups({ useSheetForTasks: true });
 
@@ -2627,4 +2659,67 @@ function syncApprovedEntriesWithState(existingState = null) {
   }
 
   return { completed: true, totalSynced, totalFailed, totalAlreadySynced, totalTaggingFailed, taggingErrors };
+}
+
+// ============================================================================
+// PREFLIGHT CORRECTIONS CHECK (Back Office)
+// ============================================================================
+
+/**
+ * Checks whether any of the given Toggl entry IDs have unresolved corrections
+ * in Back Office that would affect a TimeSync push (no_task, unknown_project).
+ *
+ * NON-BLOCKING by design: a failure here must never prevent a sync from
+ * proceeding. The preflight is advisory — entries keep their Approved tag
+ * regardless, so a skipped warning just means the user finds out at QBO
+ * reconciliation instead of before the push.
+ *
+ * @param {number[]} entryIds - Toggl time entry IDs to check
+ * @returns {Object|null} {total_flagged, by_reason, corrections_url} or null on failure
+ */
+function checkPreflightCorrections(entryIds) {
+  if (!entryIds || entryIds.length === 0) return null;
+
+  const cfClientId = getBackOfficeCfAccessClientId();
+  const cfClientSecret = getBackOfficeCfAccessClientSecret();
+  const apiKey = getBackOfficeApiKey();
+
+  if (!cfClientId || !cfClientSecret || !apiKey) {
+    logMessage('Preflight check skipped: Back Office credentials not configured', 'WARN');
+    return null;
+  }
+
+  const url = 'https://backoffice.pltheatrical.com/api/timesync/preflight';
+
+  const fetchOptions = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify({ toggl_entry_ids: entryIds }),
+    headers: {
+      'CF-Access-Client-Id': cfClientId,
+      'CF-Access-Client-Secret': cfClientSecret,
+      'X-Api-Key': apiKey
+    },
+    muteHttpExceptions: true
+  };
+
+  let response;
+  try {
+    response = UrlFetchApp.fetch(url, fetchOptions);
+  } catch (e) {
+    logMessage(`Preflight check failed (network): ${e.message}`, 'WARN');
+    return null;
+  }
+
+  if (response.getResponseCode() !== 200) {
+    logMessage(`Preflight check returned ${response.getResponseCode()}: ${response.getContentText().slice(0, 300)}`, 'WARN');
+    return null;
+  }
+
+  try {
+    return JSON.parse(response.getContentText());
+  } catch (e) {
+    logMessage(`Preflight response was not valid JSON: ${e.message}`, 'WARN');
+    return null;
+  }
 }

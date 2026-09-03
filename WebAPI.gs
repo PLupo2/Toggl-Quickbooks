@@ -164,6 +164,9 @@ function handleApiRequest(params, isPost = false) {
         return jsonResponse(apiSyncApproved(params));
       case 'previewApproved':
         return jsonResponse(apiPreviewApproved(params));
+      case 'preflightCheck':
+        if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
+        return jsonResponse(apiPreflightCheck(params));
       case 'recomputeDisagreement':
         if (!isPost) return jsonResponse({ error: 'Use POST for this action' }, 405);
         return jsonResponse(apiRecomputeDisagreement());
@@ -513,6 +516,50 @@ function apiPreviewApproved(params) {
     syncedTag,
     entries
   };
+}
+
+/**
+ * Preflight check: fetches approved Toggl entries, then asks Back Office
+ * whether any have unresolved corrections (no_task, unknown_project).
+ * Called by the web dashboard BEFORE starting a sync so the user can
+ * decide whether to proceed or fix corrections first.
+ */
+function apiPreflightCheck(params) {
+  params = params || {};
+
+  let dateRange;
+  if (params.startDate && params.endDate) {
+    dateRange = { startDate: params.startDate, endDate: params.endDate };
+  } else {
+    dateRange = getImportDateRange();
+  }
+
+  const approvedTag = getApprovedTagName();
+  const allEntries = fetchTimeEntriesAllUsers(dateRange.startDate, dateRange.endDate);
+
+  const tags = fetchTogglTags();
+  const tagMap = {};
+  tags.forEach(t => { tagMap[t.id] = t.name; });
+
+  const approvedTagId = Object.keys(tagMap).find(id => tagMap[id] === approvedTag);
+  const approvedEntries = allEntries.filter(entry => {
+    const entryTagIds = entry.tag_ids || [];
+    return approvedTagId && entryTagIds.includes(Number(approvedTagId));
+  });
+
+  if (approvedEntries.length === 0) {
+    return { total_flagged: 0, by_reason: {}, corrections_url: '', entry_count: 0 };
+  }
+
+  const entryIds = approvedEntries.map(e => e.id);
+  const result = checkPreflightCorrections(entryIds);
+
+  if (!result) {
+    return { total_flagged: 0, by_reason: {}, corrections_url: '', entry_count: approvedEntries.length, skipped: true };
+  }
+
+  result.entry_count = approvedEntries.length;
+  return result;
 }
 
 /**
