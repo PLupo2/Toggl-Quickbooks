@@ -55,20 +55,6 @@ const App = {
             </button>
           </nav>
           <div style="padding:12px 20px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:10px">
-            <div class="theme-toggle">
-              <button class="theme-toggle-btn" data-theme-choice="light" onclick="ThemeManager.set('light')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-                Light
-              </button>
-              <button class="theme-toggle-btn" data-theme-choice="system" onclick="ThemeManager.set('system')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                System
-              </button>
-              <button class="theme-toggle-btn" data-theme-choice="dark" onclick="ThemeManager.set('dark')">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-                Dark
-              </button>
-            </div>
             <div style="display:flex;gap:8px">
               <a class="btn btn-sm" style="flex:1;justify-content:center" href="/cdn-cgi/access/logout">
                 Sign out
@@ -85,10 +71,6 @@ const App = {
         </div>
       </div>
       <div class="toast-container" id="toast-container"></div>`;
-
-    // Sync theme toggle active state with current preference
-    const saved = localStorage.getItem(ThemeManager.STORAGE_KEY) || 'system';
-    ThemeManager.apply(saved);
   },
 
   // ===========================================================================
@@ -535,6 +517,33 @@ const Pages = {
     }
 
     try {
+      // Preflight: check for unresolved corrections before starting the sync.
+      // Non-blocking — if the call fails, proceed silently.
+      if (btn) btn.innerHTML = '<div class="spinner"></div> Checking corrections...';
+      try {
+        const preflight = await API.post('preflightCheck');
+        if (preflight && preflight.total_flagged > 0) {
+          const reasons = Object.keys(preflight.by_reason || {})
+            .map(r => `  ${r}: ${preflight.by_reason[r]}`)
+            .join('\n');
+          const proceed = confirm(
+            `${preflight.total_flagged} of ${preflight.entry_count} approved entries ` +
+            `have unresolved corrections in Back Office:\n\n${reasons}\n\n` +
+            `These entries may sync with incomplete data (missing task or project).\n\n` +
+            `Press OK to sync anyway, or Cancel to review corrections first.`
+          );
+          if (!proceed) {
+            window.open(preflight.corrections_url, '_blank');
+            Toast.info('Sync cancelled — opening corrections page.');
+            if (btn) { btn.disabled = false; btn.textContent = 'Sync Now'; }
+            return;
+          }
+        }
+      } catch (preflightErr) {
+        // Non-blocking — proceed with sync
+      }
+
+      if (btn) btn.innerHTML = '<div class="spinner"></div> Starting sync...';
       let start;
       try {
         start = await API.post('syncApproved');
@@ -1206,50 +1215,12 @@ function formatSyncTime(timestamp) {
 }
 
 // ===========================================================================
-// Theme Manager — Light / Dark / System toggle
+// Theme is now owned by the PLT shared shell (plt-shell.js): the inline
+// blocking script in index.html's <head> sets data-theme from the
+// plt-theme cookie before first paint, and the shell's own toggle button
+// updates both the cookie and data-theme on click. No local theme code
+// needed here.
 // ===========================================================================
-
-const ThemeManager = {
-  STORAGE_KEY: 'tqs_theme',
-
-  init() {
-    const saved = localStorage.getItem(this.STORAGE_KEY) || 'system';
-    this.apply(saved);
-  },
-
-  set(mode) {
-    localStorage.setItem(this.STORAGE_KEY, mode);
-    this.apply(mode);
-  },
-
-  apply(mode) {
-    const root = document.documentElement;
-
-    if (mode === 'dark') {
-      root.setAttribute('data-theme', 'dark');
-    } else if (mode === 'light') {
-      root.setAttribute('data-theme', 'light');
-    } else {
-      // System preference
-      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      root.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
-    }
-
-    // Update toggle button active states
-    document.querySelectorAll('.theme-toggle-btn').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.themeChoice === mode);
-    });
-  }
-};
-
-// Listen for system preference changes (only applies when mode is 'system')
-window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-  const saved = localStorage.getItem(ThemeManager.STORAGE_KEY) || 'system';
-  if (saved === 'system') ThemeManager.apply('system');
-});
-
-// Initialize theme as early as possible
-ThemeManager.init();
 
 // ===========================================================================
 // Init — triggered by the inline DOMContentLoaded listener in index.html

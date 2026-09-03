@@ -66,6 +66,7 @@
   /* Layout */
   --sidebar-width: 260px;
   --header-height: 64px;
+  --shell-height: 48px; /* PLT shared shell bar (plt-shell.js), first child of body */
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
@@ -146,7 +147,12 @@ body {
   display: flex;
   flex-direction: column;
   position: fixed;
-  top: 0;
+  /* Below the shell bar (plt-shell, first child of body) -- it's a
+     normal-flow block, not fixed, so it's not part of this stacking
+     context; without this offset the fixed sidebar paints over its
+     left side (switcher/status/app-name) even though the shell itself
+     renders correctly underneath. */
+  top: var(--shell-height);
   left: 0;
   bottom: 0;
   z-index: 100;
@@ -724,7 +730,8 @@ tr.row-unmapped td {
 
 .toast-container {
   position: fixed;
-  top: 20px;
+  /* Below the shell bar, same reasoning as .sidebar above. */
+  top: calc(var(--shell-height) + 20px);
   right: 20px;
   z-index: 1000;
   display: flex;
@@ -1273,55 +1280,6 @@ td.editable:hover {
 .info-box strong {
   font-weight: 500;
   color: var(--text);
-}
-
-/* ============================================================================
-   THEME TOGGLE
-   ============================================================================ */
-
-.theme-toggle {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  background: var(--surface-hover);
-  border-radius: var(--radius-sm);
-  padding: 3px;
-  width: 100%;
-}
-
-.theme-toggle-btn {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  padding: 6px 0;
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  font-family: inherit;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  cursor: pointer;
-  border-radius: 6px;
-  transition: all 0.2s ease;
-}
-
-.theme-toggle-btn:hover {
-  color: var(--text-secondary);
-}
-
-.theme-toggle-btn.active {
-  background: var(--surface);
-  color: var(--text);
-  box-shadow: var(--shadow-sm);
-}
-
-.theme-toggle-btn svg {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
 }
 
 /* ============================================================================

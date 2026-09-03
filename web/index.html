@@ -4,15 +4,29 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PL Theatrical TimeSync</title>
+  <!-- PLT shared shell: set data-theme from the plt-theme cookie before first
+       paint, so the page never flashes the wrong theme while plt-shell.js
+       (loaded at the end of body) finishes initializing. -->
+  <script>
+    (function () {
+      var match = document.cookie.match(/(?:^|; )plt-theme=([^;]*)/);
+      var value = match ? decodeURIComponent(match[1]) : null;
+      if (value === 'light' || value === 'dark') {
+        document.documentElement.setAttribute('data-theme', value);
+      }
+    })();
+  </script>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://assets.pltheatrical.com/ui/plt-tokens.css">
   <link rel="stylesheet" href="css/styles.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
   <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 </head>
 <body>
+  <plt-shell app-name="TimeSync" app-id="timesync"></plt-shell>
   <div id="app">
     <div class="setup-screen">
       <div class="setup-card">
@@ -25,5 +39,6 @@
   <script src="js/api.js"></script>
   <script src="js/app.js"></script>
   <script>document.addEventListener('DOMContentLoaded', () => App.init());</script>
+  <script src="https://assets.pltheatrical.com/ui/plt-shell.js"></script>
 </body>
 </html>
