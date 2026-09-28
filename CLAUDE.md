@@ -97,6 +97,55 @@ Container: `docker-compose up -d --build` from the repo root. `./data/timesync.d
 - THE MAC MINI IS THE PRIMARY AND ONLY DEVELOPMENT PATH for this repo. MacBook is last resort only (physically-impossible-elsewhere tasks).
 - TimeSync is actively used in production (real payroll-adjacent QBO writes) — changes are deliberate and verified before deploy. Verify modules against real live data, do a real browser check before trusting API-level tests alone.
 
+## BILL RATE PUSH TO QBO (fixed 2026-09-28)
+
+`qbo_client.create_time_activity` sent no `HourlyRate`, so QBO fell back to
+the service item's `UnitPrice` (0 for most items) -- ~100 Nosferatu 2026
+entries synced 2026-09-28 06:15-06:30 UTC landed at $0 though Back Office
+held real rates ($20/$22/$20). Scope was new pushes only; entries already
+in QBO were not touched (Philip handling those separately).
+
+- `back_office_client.get_bill_rates(toggl_entry_ids)` -- one bulk POST per
+  sync run (mirrors `build_mapping_lookups`' shape) to Back Office's new
+  `POST /api/timesync/bill-rates`, returning `{str(id): rate or None}`. A
+  fetch failure degrades to `{}` (holds this run's billable entries for
+  retry) rather than aborting the whole sync, unlike the mappings fetch.
+- `sync_engine.sync_single_entry(entry, mappings, bill_rates)` gates only
+  billable entries: a resolved rate (0 included) is sent as `HourlyRate`; an
+  unresolved one (missing or explicit `None`) returns `{"held": True, ...}`
+  instead of calling QBO at all. Non-billable entries are unaffected.
+- The main loop logs a held entry to `sync_log` with status `"Held"` (not
+  `"Success"`, not tagged `Synced` in Toggl) -- picked up and retried
+  automatically on every later run via the existing already-synced filter,
+  no special-case retry logic needed. `sync_job.total_held` (additive
+  migration) and the web UI (Sync Log filter/badge, completion toast)
+  surface it.
+- **Cloudflare Access gap found and fixed during deploy verification**: Back
+  Office's TimeSync service token is only recognized by a path-scoped Access
+  app for `/api/mappings/all` -- there was no equivalent for
+  `/api/timesync/*`, so both this new endpoint and the pre-existing (and, it
+  turns out, never-actually-reachable) `/api/timesync/preflight` 302'd to a
+  Cloudflare login page before ever reaching the app. Fixed by adding a new
+  Access app scoped to exactly `/api/timesync/bill-rates` with the same
+  non_identity + TimeSync-service-token policy the `/api/mappings/all` app
+  already uses. `/api/timesync/preflight` was deliberately left broken --
+  its frontend caller (`API.post('preflightCheck')` in `web/js/app.js`)
+  also isn't wired to any action in `routes.py`'s dispatch table, a second,
+  unrelated dead-code gap, out of scope here.
+- Tests: `tests/test_bill_rate_push.py` (the three rate cases at
+  `sync_single_entry` + `qbo_client` payload level, plus non-billable
+  bypass), `tests/test_back_office_client_bill_rates.py` (fetch-failure
+  degradation). First pytest setup in this repo (`requirements-dev.txt`,
+  `tests/conftest.py` puts `service/` on `sys.path`).
+- Deployed 2026-09-28T07:55:37Z (03:55:37 EDT); DB backed up first
+  (`data/timesync.pre-billrate-fix.20260928-075532.db`, 4819/4819 sync_log
+  rows, integrity ok); `total_held` column confirmed present post-migration,
+  row counts unchanged. Behavioral check: called
+  `back_office_client.get_bill_rates` from inside the running container
+  against three real Nosferatu 2026 `toggl_entry_id`s pulled from Back
+  Office's live DB -- got back the real $22.00 rate for all three, over the
+  actual public path (Cloudflare Access + service token), not a mock.
+
 ## MODEL ROUTING
 - L1 for config changes, CSS tweaks
 - L2 for mapping logic, sync workflow, API client changes
