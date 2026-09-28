@@ -131,7 +131,8 @@ in QBO were not touched (Philip handling those separately).
   already uses. `/api/timesync/preflight` was deliberately left broken --
   its frontend caller (`API.post('preflightCheck')` in `web/js/app.js`)
   also isn't wired to any action in `routes.py`'s dispatch table, a second,
-  unrelated dead-code gap, out of scope here.
+  unrelated dead-code gap, out of scope here. **Both gaps fixed 2026-09-28,
+  see PREFLIGHT CHECK WIRED below.**
 - Tests: `tests/test_bill_rate_push.py` (the three rate cases at
   `sync_single_entry` + `qbo_client` payload level, plus non-billable
   bypass), `tests/test_back_office_client_bill_rates.py` (fetch-failure
@@ -145,6 +146,68 @@ in QBO were not touched (Philip handling those separately).
   against three real Nosferatu 2026 `toggl_entry_id`s pulled from Back
   Office's live DB -- got back the real $22.00 rate for all three, over the
   actual public path (Cloudflare Access + service token), not a mock.
+
+## PREFLIGHT CHECK WIRED (2026-09-28, DEPLOYED)
+
+Closed the two gaps the BILL RATE PUSH section above flagged as out of
+scope: `preflightCheck` was called by `web/js/app.js` since 2026-08-29 but
+never registered as an action, and Back Office's `/api/timesync/preflight`
+had no Cloudflare Access route for TimeSync's service token -- every call
+404'd (unregistered action) and, even if it had been registered, would
+then have hit a CF Access login redirect. Both fixed together:
+
+- `routes._post_preflight_check` (new, registered in `POST_ONLY_ACTIONS`)
+  collects the same approved-not-yet-synced Toggl entry IDs
+  `_preview_approved` would push (same date-range/tag/already-synced-map
+  walk) and POSTs them to Back Office via `back_office_client.get_preflight`
+  (new, mirrors `get_bill_rates`' fail-open shape exactly). Returns
+  `{entry_count, total_flagged, by_reason, held_count, corrections_url}`.
+  Fails open at every layer -- a Toggl error, missing credentials, or a
+  Back Office round-trip failure all return `total_flagged: 0, held_count: 0`
+  so `runSync`'s non-blocking preflight proceeds with the sync exactly as
+  before this fix existed.
+- Back Office (`routers/sync_router.py`): `TIMESYNC_RELEVANT_REASONS` gained
+  `unknown_user` alongside `no_task`/`unknown_project`. Response gained
+  `held_count` -- billable entries with an unresolved `bill_rate`, mirroring
+  `sync_single_entry`'s own hold rule (a non-billable entry's NULL bill_rate
+  is normal and never held) so the count can't false-positive on ordinary
+  non-billable time.
+- `web/js/app.js`'s confirm dialog now fires on `held_count` too (previously
+  only `total_flagged`), naming how many approved entries will sync held
+  (no bill rate) this run, in addition to the existing corrections warning.
+- Cloudflare Access: added `backoffice.pltheatrical.com/api/timesync/preflight`
+  as a second (exact-path) destination on the existing
+  `backoffice-timesync-bill-rates` Access app, same TimeSync-service-token
+  policy `/api/timesync/bill-rates` already uses -- confirmed via a full
+  GET-then-PUT-full-body round trip that `session_duration` (730h) and
+  `app_launcher_visible` (false) survive; an earlier partial PUT (destinations
+  only) silently reset both to API defaults, caught and corrected before
+  moving on -- Cloudflare's Access Application PUT is NOT a field-level
+  merge for every field, despite behaving that way for some (e.g.
+  `oauth_configuration`); send the full object back every time.
+- Tests: `tests/test_back_office_client_preflight.py` (5, mirrors the
+  bill-rates client tests), `tests/test_preflight_check_action.py` (7,
+  covers action registration, approved/already-synced ID collection,
+  Toggl-failure fail-open, Back-Office-failure fail-open, GET rejection).
+  Back Office: `tests/test_timesync_preflight.py` gained `held_count`
+  assertions plus 4 new cases (`unknown_user`, held-only-if-billable, a
+  genuine $0 rate not counted as held). Full suites green both sides:
+  TimeSync 25/25, Back Office 555/555.
+- Deployed 2026-09-28 (both containers rebuilt/restarted, healthy). Verified
+  live end-to-end through the real Cloudflare Access path (not a mock):
+  `POST https://timesync.pltheatrical.com/api {"action":"preflightCheck"}`
+  with the TimeSync service token returned 200 with the full response shape
+  (production currently has 0 approved-not-yet-synced entries, so
+  `entry_count: 0`). Independently confirmed the two branches this wires up
+  against real Back Office data, direct to
+  `https://backoffice.pltheatrical.com/api/timesync/preflight`: a real
+  billable/NULL-bill_rate pair returned `held_count: 2, total_flagged: 0`
+  (dialog now fires); a real `needs_review=0` pair returned all zeros
+  (dialog stays silent, sync proceeds). Production currently has zero
+  `needs_review=1` rows, so the `no_task`-triggers-the-dialog branch itself
+  was verified via the seeded unit tests rather than live data -- the same
+  SQL path is now live in production and covered by
+  `test_flagged_entries_counted_by_reason`/`test_unknown_user_reason_counted`.
 
 ## MODEL ROUTING
 - L1 for config changes, CSS tweaks
