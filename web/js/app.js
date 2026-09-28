@@ -639,12 +639,18 @@ const Pages = {
       if (status.jobId !== jobId) return; // a different job took over — not our concern
 
       if (status.status === 'completed') {
-        Toast.success(`Sync completed: ${status.synced} synced, ${status.failed} failed, ${status.alreadySynced} already synced`);
+        Toast.success(`Sync completed: ${status.synced} synced, ${status.failed} failed, ${status.held || 0} held, ${status.alreadySynced} already synced`);
         if (status.taggingFailed > 0) {
           // QBO write already succeeded — this is a review-surface staleness
           // warning, not a sync failure, but it must not be a silent WARN
           // buried in a log no one reads (that's exactly how this bug hid).
           Toast.error(`⚠ ${status.taggingFailed} entries synced but failed to tag "Synced" in Toggl — review view will be stale until retried.`);
+        }
+        if (status.held > 0) {
+          // Not a failure — the entry just has no resolved bill rate yet in
+          // Back Office. It's re-attempted automatically on every future
+          // sync, no action needed here beyond making it visible.
+          Toast.error(`⏳ ${status.held} entries held — waiting on a bill rate in Back Office. They'll retry automatically on the next sync.`);
         }
         Pages.sync(); // Reload preview, clears the in-progress banner
         return;
@@ -659,7 +665,7 @@ const Pages = {
       // totalEntries is set once the job's walk is known (after the initial
       // Toggl fetch + already-synced filter) -- a poll landing before that
       // shows a generic starting message rather than "X of 0".
-      const processedCount = status.synced + status.failed;
+      const processedCount = status.synced + status.failed + (status.held || 0);
       const progress = !status.totalEntries
         ? 'Starting sync…'
         : status.pending
@@ -709,6 +715,7 @@ const Pages = {
               <option value="" ${!f.status ? 'selected' : ''}>All</option>
               <option value="Success" ${f.status === 'Success' ? 'selected' : ''}>Success</option>
               <option value="Failed" ${f.status === 'Failed' ? 'selected' : ''}>Failed</option>
+              <option value="Held" ${f.status === 'Held' ? 'selected' : ''}>Held (waiting on bill rate)</option>
               <option value="Already synced" ${f.status === 'Already synced' ? 'selected' : ''}>Already synced</option>
             </select>
           </div>
@@ -782,15 +789,19 @@ const Pages = {
       const groupsHtml = groupKeys.map(key => {
         const entries = groups[key];
         const successCount = entries.filter(e => e['Status'] === 'Success').length;
-        const failCount = entries.length - successCount;
+        const heldCount = entries.filter(e => e['Status'] === 'Held').length;
+        const failCount = entries.length - successCount - heldCount;
         const isExpanded = Pages._logExpanded[key];
 
-        const statusBadge = failCount > 0
-          ? `<span class="badge badge-success">${successCount}</span> <span class="badge badge-danger">${failCount}</span>`
-          : `<span class="badge badge-success">${successCount}</span>`;
+        const statusBadge = [
+          `<span class="badge badge-success">${successCount}</span>`,
+          heldCount > 0 ? `<span class="badge badge-warning">${heldCount}</span>` : '',
+          failCount > 0 ? `<span class="badge badge-danger">${failCount}</span>` : '',
+        ].filter(Boolean).join(' ');
 
         const entriesHtml = entries.map(e => {
-          const statusClass = e['Status'] === 'Success' ? 'badge-success' : 'badge-danger';
+          const statusClass = e['Status'] === 'Success' ? 'badge-success' : e['Status'] === 'Held' ? 'badge-warning' : 'badge-danger';
+          const errorColor = e['Status'] === 'Held' ? 'var(--warning)' : 'var(--danger)';
           // Format date - handle ISO strings and show just the date portion
           const entryDate = formatLogDate(e['Date']);
           // Duration - handle spreadsheet date serialization (1899-12-30 epoch) or formatted strings
@@ -805,7 +816,7 @@ const Pages = {
               <td>${e['Description'] || ''}</td>
               <td>${duration}</td>
               <td><span class="badge ${statusClass}">${e['Status']}</span></td>
-              <td style="color:var(--danger);font-size:12px">
+              <td style="color:${errorColor};font-size:12px">
                 ${e['Error'] || ''}
                 ${fixLink ? `<br><a href="${fixLink}" target="_blank" rel="noopener">Fix in Back Office →</a>` : ''}
               </td>
@@ -1118,6 +1129,9 @@ function mappingErrorLink(errorText) {
     return 'https://backoffice.pltheatrical.com/#/clients';
   }
   if (errorText.startsWith('No QBO service item mapping for task:')) {
+    return 'https://backoffice.pltheatrical.com/#/mappings/tasks';
+  }
+  if (errorText.startsWith('Waiting on bill rate:')) {
     return 'https://backoffice.pltheatrical.com/#/mappings/tasks';
   }
   return null;

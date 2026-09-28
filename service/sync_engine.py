@@ -274,10 +274,27 @@ def resolve_sync_mappings(entry, mappings):
     }}
 
 
-def sync_single_entry(entry, mappings):
+def sync_single_entry(entry, mappings, bill_rates=None):
+    """bill_rates: {str(togglEntryId): rate or None}, pre-fetched once per
+    run for every billable entry in the walk (sync_approved_entries). Only
+    billable entries are gated -- BillableStatus is what actually drives
+    QBO's own billing, so a not-billable entry's rate is immaterial and it
+    syncs exactly as before. 0 is a resolved rate (sent as-is); missing from
+    the map or explicitly None means unresolved -- held, not pushed."""
     resolved = resolve_sync_mappings(entry, mappings)
     if not resolved["success"]:
         return resolved
+
+    if entry.get("billable"):
+        bill_rates = bill_rates or {}
+        entry_id = str(entry["togglEntryId"])
+        if entry_id not in bill_rates or bill_rates[entry_id] is None:
+            return {
+                "success": False, "held": True,
+                "error": "Waiting on bill rate: not yet resolved in Back Office for this entry.",
+            }
+        resolved["timeData"]["hourlyRate"] = bill_rates[entry_id]
+
     try:
         activity = qbo_client.create_time_activity(resolved["timeData"])
         return {"success": True, "qboId": activity["Id"]}
@@ -336,7 +353,7 @@ def sync_approved_entries(force_entry_ids=None, on_progress=None, on_start=None)
             pass
 
     if not entries_to_sync:
-        return {"synced": 0, "failed": 0, "alreadySynced": already_synced_count, "taggingFailed": 0,
+        return {"synced": 0, "failed": 0, "held": 0, "alreadySynced": already_synced_count, "taggingFailed": 0,
                 "taggingErrors": [], "errors": []}
 
     toggl_lookups = toggl.build_toggl_lookups()
@@ -353,7 +370,15 @@ def sync_approved_entries(force_entry_ids=None, on_progress=None, on_start=None)
             if tid.isdigit():
                 toggl_lookups["tasks"][int(tid)] = name
 
-    results = {"synced": 0, "failed": 0, "alreadySynced": already_synced_count, "taggingFailed": 0,
+    # Bill rates: fetched once for every billable entry in the walk (a
+    # non-billable entry never needs one -- see sync_single_entry). A fetch
+    # failure degrades to {} rather than aborting the whole run (unlike the
+    # mappings fetch above) -- it just holds this run's billable pushes for
+    # a retry next sync.
+    billable_ids = [str(e.get("id") or e.get("time_entry_id")) for e in entries_to_sync if e.get("billable")]
+    bill_rates = back_office_client.get_bill_rates(billable_ids)
+
+    results = {"synced": 0, "failed": 0, "held": 0, "alreadySynced": already_synced_count, "taggingFailed": 0,
                "taggingErrors": [], "errors": [], "syncedEntryIds": []}
     untagged_synced_ids = []
 
@@ -373,7 +398,7 @@ def sync_approved_entries(force_entry_ids=None, on_progress=None, on_start=None)
                 toggl.profile_calls = 0
                 toggl.start_time = time.time()
 
-            sync_result = sync_single_entry(processed, mappings)
+            sync_result = sync_single_entry(processed, mappings, bill_rates)
 
             if sync_result["success"]:
                 results["synced"] += 1
@@ -383,6 +408,13 @@ def sync_approved_entries(force_entry_ids=None, on_progress=None, on_start=None)
                 log_sync_result(processed, sync_result["qboId"], "Success",
                                  "Override: forced re-sync" if is_override else "")
                 record_tag_flush(results, maybe_flush_synced_tags(toggl, untagged_synced_ids, synced_tag, False))
+            elif sync_result.get("held"):
+                # Not tagged Synced, not logged Success -- already_synced_map
+                # stays untouched, so this entry is picked up and retried
+                # automatically on every subsequent run until its rate
+                # resolves. No QBO write happened, so nothing to roll back.
+                results["held"] += 1
+                log_sync_result(processed, "", "Held", sync_result["error"])
             else:
                 results["failed"] += 1
                 results["errors"].append({"entryId": processed["togglEntryId"], "error": sync_result["error"]})
@@ -410,10 +442,10 @@ def sync_approved_entries(force_entry_ids=None, on_progress=None, on_start=None)
 def _progress(on_progress, results):
     # alreadySynced is now a fixed precomputed count (entries_to_sync already
     # excludes them), not incremented per-entry -- the throttle only needs to
-    # track the two counters that actually move during the loop.
-    if on_progress and (results["synced"] + results["failed"]) % 5 == 0:
+    # track the counters that actually move during the loop.
+    if on_progress and (results["synced"] + results["failed"] + results["held"]) % 5 == 0:
         try:
-            on_progress(results["synced"], results["failed"], results["alreadySynced"])
+            on_progress(results["synced"], results["failed"], results["alreadySynced"], results["held"])
         except Exception:
             pass
 
@@ -468,25 +500,28 @@ def start_async_sync_job(force_entry_ids=None):
 
 
 def _run_sync_job(job_id, force_entry_ids):
-    def on_progress(synced, failed, already_synced):
-        _save_sync_job_meta(job_id, total_synced=synced, total_failed=failed, total_already_synced=already_synced)
+    def on_progress(synced, failed, already_synced, held=0):
+        _save_sync_job_meta(job_id, total_synced=synced, total_failed=failed, total_already_synced=already_synced, total_held=held)
 
     def on_start(total):
         _save_sync_job_meta(job_id, total_entries=total)
 
     try:
         result = sync_approved_entries(force_entry_ids=force_entry_ids, on_progress=on_progress, on_start=on_start)
+        held = result.get("held", 0)
         _save_sync_job_meta(
             job_id, status="completed", completed_at=datetime.now(timezone.utc).isoformat(),
             total_synced=result["synced"], total_failed=result["failed"],
             total_already_synced=result["alreadySynced"], total_tagging_failed=result.get("taggingFailed", 0),
+            total_held=held,
         )
         tagging_failed = result.get("taggingFailed", 0)
-        if result["failed"] > 0 or tagging_failed > 0:
+        if result["failed"] > 0 or tagging_failed > 0 or held > 0:
             alerts.discord_alert(
                 "TimeSync: sync completed with issues",
                 f"Job {job_id}: {result['synced']} synced, {result['failed']} failed, "
-                f"{result['alreadySynced']} already synced, {tagging_failed} tagging failures.\n"
+                f"{result['alreadySynced']} already synced, {held} held (waiting on bill rate), "
+                f"{tagging_failed} tagging failures.\n"
                 f"Check the Sync Log at https://timesync.pltheatrical.com/ for details.",
             )
     except Exception as e:

@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS sync_job (
     total_failed INTEGER DEFAULT 0,
     total_already_synced INTEGER DEFAULT 0,
     total_tagging_failed INTEGER DEFAULT 0,
+    total_held INTEGER DEFAULT 0,     -- billable entries not pushed: bill rate unresolved in Back Office
     total_entries INTEGER DEFAULT 0,  -- entries this job's walk covers (post already-synced filter)
     error TEXT,
     force_entry_ids TEXT       -- JSON array, D4 per-entry override
@@ -105,6 +106,8 @@ def init_db():
     existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(sync_job)")}
     if "total_entries" not in existing_cols:
         conn.execute("ALTER TABLE sync_job ADD COLUMN total_entries INTEGER DEFAULT 0")
+    if "total_held" not in existing_cols:
+        conn.execute("ALTER TABLE sync_job ADD COLUMN total_held INTEGER DEFAULT 0")
     # Seed defaults without overwriting anything already set (same contract
     # as syncMissingConfigKeys: additive only).
     existing = {row["key"] for row in conn.execute("SELECT key FROM settings")}

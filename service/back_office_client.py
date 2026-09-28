@@ -86,3 +86,46 @@ def build_mapping_lookups(abort_on_failure=True):
         return _abort("Back Office mapping response missing an expected key (users/clients/projects/tasks)", abort_on_failure)
 
     return mappings
+
+
+def get_bill_rates(toggl_entry_ids):
+    """Returns {str(toggl_entry_id): bill_rate or None} for every id
+    requested. Unlike build_mapping_lookups, a fetch failure here never
+    aborts the run -- it degrades to an empty map, which sync_engine reads
+    as "unresolved" for every entry, same as a genuinely-missing rate. A
+    single flaky Back Office round trip should hold this run's billable
+    pushes for a retry next sync, not take down entries that don't even
+    need a rate (non-billable) or crash a run that was otherwise fine."""
+    import httpx
+
+    if not toggl_entry_ids:
+        return {}
+
+    url = os.environ.get("BACK_OFFICE_BILL_RATES_URL", "https://backoffice.pltheatrical.com/api/timesync/bill-rates")
+    cf_client_id = _read_secret("timesync_cf_client_id.txt")
+    cf_client_secret = _read_secret("timesync_cf_client_secret.txt")
+    api_key = _read_secret("back_office_timesync_api_key.txt")
+
+    if not cf_client_id or not cf_client_secret or not api_key:
+        _send_pushover("TimeSync: bill rate fetch skipped", "Back Office credentials not configured -- all billable entries this run will be held.")
+        return {}
+
+    try:
+        resp = httpx.post(
+            url,
+            headers={
+                "CF-Access-Client-Id": cf_client_id,
+                "CF-Access-Client-Secret": cf_client_secret,
+                "X-Api-Key": api_key,
+                "Content-Type": "application/json",
+            },
+            json={"toggl_entry_ids": list(toggl_entry_ids)},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except (httpx.HTTPError, ValueError) as e:
+        _send_pushover("TimeSync: bill rate fetch failed", f"{e} -- all billable entries this run will be held.")
+        return {}
+
+    return data.get("bill_rates") or {}

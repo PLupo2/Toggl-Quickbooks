@@ -86,6 +86,15 @@ def create_time_activity(time_data):
         "Description": time_data.get("description") or "",
         "BillableStatus": "Billable" if time_data.get("billable") else "NotBillable",
     }
+    # HourlyRate: omitted entirely means QBO falls back to the service item's
+    # UnitPrice (0 for most items -- confirmed 2026-09-28 against ~100
+    # Nosferatu 2026 entries that landed at $0 with real Back Office rates of
+    # $20/$22). 0 is a real, deliberately-set rate and must still be sent;
+    # only the absence of a resolved rate omits the field, which the caller
+    # (sync_engine.sync_single_entry) already gates on before ever reaching
+    # here for a billable entry.
+    if time_data.get("hourlyRate") is not None:
+        payload["HourlyRate"] = time_data["hourlyRate"]
 
     response = qbo_request("timeactivity", method="post", payload=json.dumps(payload))
     if response.get("TimeActivity"):
