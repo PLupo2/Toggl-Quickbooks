@@ -522,15 +522,29 @@ const Pages = {
       if (btn) btn.innerHTML = '<div class="spinner"></div> Checking corrections...';
       try {
         const preflight = await API.post('preflightCheck');
-        if (preflight && preflight.total_flagged > 0) {
-          const reasons = Object.keys(preflight.by_reason || {})
-            .map(r => `  ${r}: ${preflight.by_reason[r]}`)
-            .join('\n');
+        const hasFlags = preflight && preflight.total_flagged > 0;
+        const hasHeld = preflight && preflight.held_count > 0;
+        if (hasFlags || hasHeld) {
+          const parts = [];
+          if (hasFlags) {
+            const reasons = Object.keys(preflight.by_reason || {})
+              .map(r => `  ${r}: ${preflight.by_reason[r]}`)
+              .join('\n');
+            parts.push(
+              `${preflight.total_flagged} of ${preflight.entry_count} approved entries ` +
+              `have unresolved corrections in Back Office:\n\n${reasons}\n\n` +
+              `These entries may sync with incomplete data (missing task or project).`
+            );
+          }
+          if (hasHeld) {
+            parts.push(
+              `${preflight.held_count} of ${preflight.entry_count} approved entries have no resolved ` +
+              `bill rate and will be held (not pushed) this run.`
+            );
+          }
           const proceed = confirm(
-            `${preflight.total_flagged} of ${preflight.entry_count} approved entries ` +
-            `have unresolved corrections in Back Office:\n\n${reasons}\n\n` +
-            `These entries may sync with incomplete data (missing task or project).\n\n` +
-            `Press OK to sync anyway, or Cancel to review corrections first.`
+            parts.join('\n\n') +
+            `\n\nPress OK to sync anyway, or Cancel to review corrections first.`
           );
           if (!proceed) {
             window.open(preflight.corrections_url, '_blank');

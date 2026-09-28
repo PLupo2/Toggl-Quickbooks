@@ -288,6 +288,40 @@ def _get_project_pending_entries(params):
     }
 
 
+def _post_preflight_check(params):
+    """Warn before Sync Approved pushes: collect the same approved-not-yet-synced
+    entry IDs _preview_approved would push and ask Back Office whether any have
+    unresolved corrections or an unresolved bill rate. Fail open -- any failure
+    (Toggl fetch, Back Office round trip, anything) returns total_flagged=0 /
+    held_count=0 so the caller (runSync's non-blocking preflight) proceeds with
+    the sync exactly as if nothing were flagged."""
+    default_url = "https://backoffice.pltheatrical.com/#/corrections?source=time-entry"
+    try:
+        date_range = sync_engine.get_import_date_range()
+        approved_tag = sync_engine.get_approved_tag_name()
+        toggl = TogglClient()
+        all_entries = toggl.fetch_time_entries_all_users(date_range["startDate"], date_range["endDate"])
+        tags = toggl.fetch_tags()
+        tag_map = {t["id"]: t["name"] for t in tags}
+        approved_entries = [
+            e for e in all_entries
+            if any(t.lower() == approved_tag.lower() for t in resolve_entry_tags(e, tag_map))
+        ]
+        already_synced_map = sync_engine.build_already_synced_map()
+        to_sync_ids = [e.get("id") for e in approved_entries if str(e.get("id")) not in already_synced_map]
+    except Exception:
+        return {"entry_count": 0, "total_flagged": 0, "by_reason": {}, "held_count": 0, "corrections_url": default_url}
+
+    result = back_office_client.get_preflight(to_sync_ids)
+    return {
+        "entry_count": len(to_sync_ids),
+        "total_flagged": result.get("total_flagged", 0),
+        "by_reason": result.get("by_reason") or {},
+        "held_count": result.get("held_count", 0),
+        "corrections_url": result.get("corrections_url") or default_url,
+    }
+
+
 def _post_sync_approved(params):
     job = sync_engine.start_async_sync_job(force_entry_ids=params.get("forceEntryIds"))
     return {
@@ -388,6 +422,7 @@ POST_ONLY_ACTIONS = {
     "syncApproved": _post_sync_approved,
     "recomputeDisagreement": _post_recompute_disagreement,
     "setConfig": _post_set_config,
+    "preflightCheck": _post_preflight_check,
 }
 ALL_ACTIONS = {**READ_ACTIONS, **POST_ONLY_ACTIONS}
 

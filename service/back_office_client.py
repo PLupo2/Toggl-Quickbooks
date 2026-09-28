@@ -129,3 +129,49 @@ def get_bill_rates(toggl_entry_ids):
         return {}
 
     return data.get("bill_rates") or {}
+
+
+def get_preflight(toggl_entry_ids):
+    """Returns {total_flagged, by_reason, held_count, corrections_url}. Like
+    get_bill_rates, never raises -- a fetch failure degrades to the same
+    shape a clean run would return (total_flagged=0, held_count=0), which
+    the caller (routes._post_preflight_check) passes straight through so
+    Sync Approved's preflight warning fails open rather than blocking sync."""
+    import httpx
+
+    default_url = "https://backoffice.pltheatrical.com/#/corrections?source=time-entry"
+    default = {"total_flagged": 0, "by_reason": {}, "held_count": 0, "corrections_url": default_url}
+    if not toggl_entry_ids:
+        return default
+
+    url = os.environ.get("BACK_OFFICE_PREFLIGHT_URL", "https://backoffice.pltheatrical.com/api/timesync/preflight")
+    cf_client_id = _read_secret("timesync_cf_client_id.txt")
+    cf_client_secret = _read_secret("timesync_cf_client_secret.txt")
+    api_key = _read_secret("back_office_timesync_api_key.txt")
+
+    if not cf_client_id or not cf_client_secret or not api_key:
+        return default
+
+    try:
+        resp = httpx.post(
+            url,
+            headers={
+                "CF-Access-Client-Id": cf_client_id,
+                "CF-Access-Client-Secret": cf_client_secret,
+                "X-Api-Key": api_key,
+                "Content-Type": "application/json",
+            },
+            json={"toggl_entry_ids": list(toggl_entry_ids)},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except (httpx.HTTPError, ValueError):
+        return default
+
+    return {
+        "total_flagged": data.get("total_flagged", 0),
+        "by_reason": data.get("by_reason") or {},
+        "held_count": data.get("held_count", 0),
+        "corrections_url": data.get("corrections_url") or default_url,
+    }
