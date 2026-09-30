@@ -105,6 +105,74 @@ def test_explicit_null_rate_is_held_and_never_pushed(monkeypatch):
     assert calls == []
 
 
+# --- Hold message says why (2026-09-30) -------------------------------------
+
+def test_held_message_reports_no_rate_reason(monkeypatch):
+    calls = _mock_create_time_activity(monkeypatch)
+    bill_rates = {ENTRY_ID: None}
+    hold_reasons = {ENTRY_ID: "no_rate"}
+
+    result = sync_engine.sync_single_entry(_entry(), MAPPINGS, bill_rates, hold_reasons)
+
+    assert result["held"] is True
+    assert "no bill rate set" in result["error"].lower()
+    assert calls == []
+
+
+def test_held_message_reports_unknown_user_reason(monkeypatch):
+    _mock_create_time_activity(monkeypatch)
+    bill_rates = {}
+    hold_reasons = {ENTRY_ID: "unknown_user"}
+
+    result = sync_engine.sync_single_entry(_entry(), MAPPINGS, bill_rates, hold_reasons)
+
+    assert result["held"] is True
+    assert "toggl user not mapped" in result["error"].lower()
+
+
+def test_held_message_reports_unknown_project_reason(monkeypatch):
+    _mock_create_time_activity(monkeypatch)
+    hold_reasons = {ENTRY_ID: "unknown_project"}
+
+    result = sync_engine.sync_single_entry(_entry(), MAPPINGS, {}, hold_reasons)
+
+    assert result["held"] is True
+    assert "toggl project not mapped" in result["error"].lower()
+
+
+def test_held_message_reports_unknown_task_reason(monkeypatch):
+    _mock_create_time_activity(monkeypatch)
+    hold_reasons = {ENTRY_ID: "unknown_task"}
+
+    result = sync_engine.sync_single_entry(_entry(), MAPPINGS, {}, hold_reasons)
+
+    assert result["held"] is True
+    assert "toggl task not mapped" in result["error"].lower()
+
+
+def test_held_message_falls_back_to_generic_text_when_reason_unknown(monkeypatch):
+    """No hold_reasons entry at all (e.g. a total fetch failure degraded to
+    {}) -- the message stays the original generic text, not a KeyError or
+    'None'."""
+    _mock_create_time_activity(monkeypatch)
+
+    result = sync_engine.sync_single_entry(_entry(), MAPPINGS, {}, {})
+
+    assert result["held"] is True
+    assert result["error"] == "Waiting on bill rate: not yet resolved in Back Office for this entry."
+
+
+def test_held_message_defaults_when_hold_reasons_omitted(monkeypatch):
+    """Backward compatible: a caller that doesn't pass hold_reasons at all
+    (the pre-2026-09-30 call shape) still works."""
+    _mock_create_time_activity(monkeypatch)
+
+    result = sync_engine.sync_single_entry(_entry(), MAPPINGS, {})
+
+    assert result["held"] is True
+    assert "bill rate" in result["error"].lower()
+
+
 # --- Non-billable entries bypass the gate entirely --------------------------
 
 def test_non_billable_entry_pushes_regardless_of_bill_rates(monkeypatch):

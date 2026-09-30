@@ -88,18 +88,34 @@ def build_mapping_lookups(abort_on_failure=True):
     return mappings
 
 
-def get_bill_rates(toggl_entry_ids):
-    """Returns {str(toggl_entry_id): bill_rate or None} for every id
-    requested. Unlike build_mapping_lookups, a fetch failure here never
-    aborts the run -- it degrades to an empty map, which sync_engine reads
-    as "unresolved" for every entry, same as a genuinely-missing rate. A
+def get_bill_rates(entries):
+    """entries: [{"toggl_entry_id", "toggl_user_id", "toggl_project_id",
+    "toggl_task_id", "is_billable"}, ...] -- the Toggl-side identity
+    alongside each id (2026-09-30), not just the bare id. Back Office maps
+    user/project/task to person/project/role itself and resolves the rate
+    LIVE, rather than reading time_entries.bill_rate -- a value that can
+    trail a same-run rate save, or not exist at all yet for an entry
+    logged after the last Toggl sync. Real incident (Dracula 389, Events
+    408): both held wrongly under the old bare-id-only shape, one because
+    the stored column was stale, the other because no row existed at all.
+
+    Returns (bill_rates, hold_reasons): bill_rates is {str(toggl_entry_id):
+    rate or None} for every id requested; hold_reasons is
+    {str(toggl_entry_id): reason} for every id whose rate came back null
+    ('unknown_user'/'unknown_project'/'unknown_task' when the identity
+    itself didn't map, 'no_rate' when it mapped fine but nothing's set) --
+    lets the held message say why instead of a generic "not resolved".
+
+    Unlike build_mapping_lookups, a fetch failure here never aborts the
+    run -- it degrades to two empty dicts, which sync_engine reads as
+    "unresolved" for every entry, same as a genuinely-missing rate. A
     single flaky Back Office round trip should hold this run's billable
     pushes for a retry next sync, not take down entries that don't even
     need a rate (non-billable) or crash a run that was otherwise fine."""
     import httpx
 
-    if not toggl_entry_ids:
-        return {}
+    if not entries:
+        return {}, {}
 
     url = os.environ.get("BACK_OFFICE_BILL_RATES_URL", "https://backoffice.pltheatrical.com/api/timesync/bill-rates")
     cf_client_id = _read_secret("timesync_cf_client_id.txt")
@@ -108,7 +124,7 @@ def get_bill_rates(toggl_entry_ids):
 
     if not cf_client_id or not cf_client_secret or not api_key:
         _send_pushover("TimeSync: bill rate fetch skipped", "Back Office credentials not configured -- all billable entries this run will be held.")
-        return {}
+        return {}, {}
 
     try:
         resp = httpx.post(
@@ -119,16 +135,16 @@ def get_bill_rates(toggl_entry_ids):
                 "X-Api-Key": api_key,
                 "Content-Type": "application/json",
             },
-            json={"toggl_entry_ids": list(toggl_entry_ids)},
+            json={"entries": list(entries)},
             timeout=30,
         )
         resp.raise_for_status()
         data = resp.json()
     except (httpx.HTTPError, ValueError) as e:
         _send_pushover("TimeSync: bill rate fetch failed", f"{e} -- all billable entries this run will be held.")
-        return {}
+        return {}, {}
 
-    return data.get("bill_rates") or {}
+    return data.get("bill_rates") or {}, data.get("hold_reasons") or {}
 
 
 def get_preflight(toggl_entry_ids):

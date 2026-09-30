@@ -274,24 +274,38 @@ def resolve_sync_mappings(entry, mappings):
     }}
 
 
-def sync_single_entry(entry, mappings, bill_rates=None):
+TIMESYNC_HOLD_REASON_TEXT = {
+    "unknown_user": "Toggl user not mapped in Back Office",
+    "unknown_project": "Toggl project not mapped in Back Office",
+    "unknown_task": "Toggl task not mapped in Back Office",
+    "no_rate": "no bill rate set in Back Office for this role on this project",
+}
+
+
+def sync_single_entry(entry, mappings, bill_rates=None, hold_reasons=None):
     """bill_rates: {str(togglEntryId): rate or None}, pre-fetched once per
-    run for every billable entry in the walk (sync_approved_entries). Only
-    billable entries are gated -- BillableStatus is what actually drives
-    QBO's own billing, so a not-billable entry's rate is immaterial and it
-    syncs exactly as before. 0 is a resolved rate (sent as-is); missing from
-    the map or explicitly None means unresolved -- held, not pushed."""
+    run for every billable entry in the walk (sync_approved_entries).
+    hold_reasons (2026-09-30): {str(togglEntryId): reason}, from the same
+    fetch -- lets the held message say WHY (no rate vs. an unmapped user/
+    project/task) instead of a generic "not yet resolved". Only billable
+    entries are gated -- BillableStatus is what actually drives QBO's own
+    billing, so a not-billable entry's rate is immaterial and it syncs
+    exactly as before. 0 is a resolved rate (sent as-is); missing from the
+    map or explicitly None means unresolved -- held, not pushed."""
     resolved = resolve_sync_mappings(entry, mappings)
     if not resolved["success"]:
         return resolved
 
     if entry.get("billable"):
         bill_rates = bill_rates or {}
+        hold_reasons = hold_reasons or {}
         entry_id = str(entry["togglEntryId"])
         if entry_id not in bill_rates or bill_rates[entry_id] is None:
+            reason = hold_reasons.get(entry_id)
+            reason_text = TIMESYNC_HOLD_REASON_TEXT.get(reason, "not yet resolved in Back Office for this entry")
             return {
                 "success": False, "held": True,
-                "error": "Waiting on bill rate: not yet resolved in Back Office for this entry.",
+                "error": f"Waiting on bill rate: {reason_text}.",
             }
         resolved["timeData"]["hourlyRate"] = bill_rates[entry_id]
 
@@ -371,12 +385,25 @@ def sync_approved_entries(force_entry_ids=None, on_progress=None, on_start=None)
                 toggl_lookups["tasks"][int(tid)] = name
 
     # Bill rates: fetched once for every billable entry in the walk (a
-    # non-billable entry never needs one -- see sync_single_entry). A fetch
-    # failure degrades to {} rather than aborting the whole run (unlike the
-    # mappings fetch above) -- it just holds this run's billable pushes for
-    # a retry next sync.
-    billable_ids = [str(e.get("id") or e.get("time_entry_id")) for e in entries_to_sync if e.get("billable")]
-    bill_rates = back_office_client.get_bill_rates(billable_ids)
+    # non-billable entry never needs one -- see sync_single_entry). Sends
+    # each entry's Toggl-side identity (2026-09-30), not just its id, so
+    # Back Office can resolve the rate LIVE instead of reading a stored
+    # column that can trail a same-run rate save or not exist yet for an
+    # entry logged after the last Toggl sync (see back_office_client.
+    # get_bill_rates). A fetch failure degrades to ({}, {}) rather than
+    # aborting the whole run (unlike the mappings fetch above) -- it just
+    # holds this run's billable pushes for a retry next sync.
+    billable_entries = [
+        {
+            "toggl_entry_id": e.get("id") or e.get("time_entry_id"),
+            "toggl_user_id": e.get("user_id"),
+            "toggl_project_id": e.get("project_id"),
+            "toggl_task_id": e.get("task_id"),
+            "is_billable": True,
+        }
+        for e in entries_to_sync if e.get("billable")
+    ]
+    bill_rates, hold_reasons = back_office_client.get_bill_rates(billable_entries)
 
     results = {"synced": 0, "failed": 0, "held": 0, "alreadySynced": already_synced_count, "taggingFailed": 0,
                "taggingErrors": [], "errors": [], "syncedEntryIds": []}
@@ -398,7 +425,7 @@ def sync_approved_entries(force_entry_ids=None, on_progress=None, on_start=None)
                 toggl.profile_calls = 0
                 toggl.start_time = time.time()
 
-            sync_result = sync_single_entry(processed, mappings, bill_rates)
+            sync_result = sync_single_entry(processed, mappings, bill_rates, hold_reasons)
 
             if sync_result["success"]:
                 results["synced"] += 1
