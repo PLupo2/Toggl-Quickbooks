@@ -209,6 +209,53 @@ then have hit a CF Access login redirect. Both fixed together:
   SQL path is now live in production and covered by
   `test_flagged_entries_counted_by_reason`/`test_unknown_user_reason_counted`.
 
+## LIVE BILL RATE RESOLUTION (2026-09-30, DEPLOYED)
+
+Follow-up to BILL RATE PUSH TO QBO above: reading only Back Office's stored
+`time_entries.bill_rate` held entries wrongly whenever that column trailed
+reality. Real incident (Back Office side, Dracula 389 + Events 408): one
+entry's rate was saved in Back Office AFTER the last Toggl sync had already
+stamped its row NULL; another was logged after the last sync entirely, so
+it had no row at all. Neither is fixable by reading stored state -- Back
+Office's `/api/timesync/bill-rates` now resolves the rate LIVE (see that
+repo's CLAUDE.md), which requires this side to actually send an identity,
+not just a bare id.
+
+- `back_office_client.get_bill_rates(entries)` -- signature changed from
+  `(toggl_entry_ids)` to `(entries)`: a list of
+  `{toggl_entry_id, toggl_user_id, toggl_project_id, toggl_task_id,
+  is_billable}` dicts, built in `sync_approved_entries` from the raw Toggl
+  Reports API fields already in hand (`user_id`/`project_id`/`task_id` on
+  each `entries_to_sync` row) -- no extra Toggl call needed. POSTs
+  `{"entries": [...]}` (was `{"toggl_entry_ids": [...]}`). Returns
+  `(bill_rates, hold_reasons)` -- was a bare `bill_rates` dict. A fetch
+  failure now degrades to `({}, {})`.
+- `sync_engine.sync_single_entry(entry, mappings, bill_rates, hold_reasons=None)`
+  gained the fourth param. A held entry's message now names why via
+  `TIMESYNC_HOLD_REASON_TEXT` ("Toggl user not mapped in Back Office." /
+  "Toggl project not mapped in Back Office." / "Toggl task not mapped in
+  Back Office." / "no bill rate set in Back Office for this role on this
+  project.") instead of the old generic "not yet resolved in Back Office
+  for this entry." -- that generic text is still the fallback when
+  `hold_reasons` has no entry for the id (e.g. a total fetch failure) or
+  the caller omits the param entirely (backward compatible).
+- Tests: `tests/test_back_office_client_bill_rates.py` rewritten for the
+  new signature/return shape (9 cases, incl. a wire-format check that the
+  POST body is `{"entries": [...]}` with the identity fields intact, not
+  the old `{"toggl_entry_ids": [...]}`); `tests/test_bill_rate_push.py`
+  gained 6 new hold-message cases (one per reason, the no-reason fallback,
+  the hold_reasons-omitted backward-compat case). Full suite 33/33 green.
+- Deployed 2026-09-30 (container rebuilt, healthy; confirmed via
+  `docker exec timesync grep` that `get_bill_rates`'s new signature and
+  `TIMESYNC_HOLD_REASON_TEXT` are present in the running image). Back
+  Office side verified live against the real four-entry incident (see that
+  repo's CLAUDE.md for the full writeup) -- this side's change is a data-
+  shape/message-text change with no independently-observable production
+  behavior beyond what Back Office's own verification already covers
+  (the next live sync run is what actually exercises this path end to
+  end), so verification here is the test suite plus the in-container
+  source check above.
+
 ## MODEL ROUTING
 - L1 for config changes, CSS tweaks
 - L2 for mapping logic, sync workflow, API client changes
