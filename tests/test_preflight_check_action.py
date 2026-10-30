@@ -13,8 +13,28 @@ from toggl_client import TogglClient
 DEFAULT_URL = "https://backoffice.pltheatrical.com/#/corrections?source=time-entry"
 
 
+# Default "everything maps" prep so a billable+unresolved candidate is held
+# (the held_count here is now mapping-aware: an entry whose mappings fail is
+# NOT held, it would be Failed by the real run). The default toggl_lookups
+# resolves project_id 3/4 to a client; the default mappings resolve user 9,
+# that client, those projects and tasks 7/8.
+_DEFAULT_TOGGL_LOOKUPS = {
+    "users": {}, "tasks": {}, "tags": {},
+    "projects": {
+        3: {"clientId": "CL", "clientName": "Client", "name": "Proj3"},
+        4: {"clientId": "CL", "clientName": "Client", "name": "Proj4"},
+    },
+}
+_DEFAULT_MAPPINGS = {
+    "users": {"9": {"qboEmployeeId": "E9"}},
+    "clients": {"CL": {"qboCustomerId": "C1"}},
+    "projects": {"3": {"qboProjectId": ""}, "4": {"qboProjectId": ""}},
+    "tasks": {"7": {"qboServiceItemId": "S7"}, "8": {"qboServiceItemId": "S8"}},
+}
+
+
 def _patch_common(monkeypatch, approved_entries, already_synced=None, preflight_result=None,
-                  bill_rates=None, hold_reasons=None):
+                  bill_rates=None, hold_reasons=None, toggl_lookups=None, mappings=None):
     monkeypatch.setattr(routes.sync_engine, "get_import_date_range",
                          lambda: {"startDate": "2026-08-01", "endDate": "2026-08-31"})
     monkeypatch.setattr(routes.sync_engine, "get_approved_tag_name", lambda: "Approved")
@@ -32,6 +52,14 @@ def _patch_common(monkeypatch, approved_entries, already_synced=None, preflight_
         return preflight_result if preflight_result is not None else {
             "total_flagged": 0, "by_reason": {}, "held_count": 0, "corrections_url": DEFAULT_URL,
         }
+
+    # Shared mapping prep (only reached when held candidates exist) -- fresh
+    # copies per call so the task-name merge can't mutate across tests.
+    tl = toggl_lookups if toggl_lookups is not None else _DEFAULT_TOGGL_LOOKUPS
+    mp = mappings if mappings is not None else _DEFAULT_MAPPINGS
+    monkeypatch.setattr(TogglClient, "build_toggl_lookups",
+                         lambda self: {k: dict(v) for k, v in tl.items()})
+    monkeypatch.setattr(back_office_client, "build_mapping_lookups", lambda: mp)
 
     monkeypatch.setattr(back_office_client, "get_bill_rates", _fake_get_bill_rates)
     monkeypatch.setattr(back_office_client, "get_preflight", _fake_get_preflight)

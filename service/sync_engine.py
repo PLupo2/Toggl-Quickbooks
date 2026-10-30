@@ -312,6 +312,64 @@ def bill_rate_hold(entry, bill_rates=None, hold_reasons=None):
     return None
 
 
+def prepare_approved_entries(entries_to_sync, toggl):
+    """Shared per-run preparation for BOTH the real sync walk
+    (sync_approved_entries) and the preflight held-count predictor
+    (routes._post_preflight_check), so the two resolve held entries off
+    byte-identical inputs. Does the bulk fetches only -- NO per-entry Toggl
+    calls: Toggl lookups (build_toggl_lookups), Back Office mappings
+    (build_mapping_lookups, still raises/aborts on failure, by design), the
+    Back Office task-name display merge, and ONE get_bill_rates call for every
+    billable entry.
+
+    Returns (processed_entries, mappings, bill_rates, hold_reasons), where
+    processed_entries is entries_to_sync mapped through process_time_entry in
+    the same order."""
+    toggl_lookups = toggl.build_toggl_lookups()
+    mappings = back_office_client.build_mapping_lookups()  # aborts (raises) on failure, by design
+
+    # Merge Back Office task names for display (Sync_Log's "Toggl Task"
+    # column). Back Office's JSON keys are always strings; Toggl's Reports
+    # API returns task_id as an integer -- store both key forms so the
+    # process_time_entry lookup hits regardless of which type it's keyed by.
+    for tid, t in mappings["tasks"].items():
+        name = t.get("togglTaskName")
+        if name:
+            toggl_lookups["tasks"][tid] = name
+            if tid.isdigit():
+                toggl_lookups["tasks"][int(tid)] = name
+
+    # Bill rates: fetched once for every billable entry in the walk (a
+    # non-billable entry never needs one -- see sync_single_entry). Sends
+    # each entry's Toggl-side identity (2026-09-30), not just its id, so
+    # Back Office can resolve the rate LIVE instead of reading a stored
+    # column that can trail a same-run rate save or not exist yet for an
+    # entry logged after the last Toggl sync (see back_office_client.
+    # get_bill_rates). A fetch failure degrades to ({}, {}) rather than
+    # aborting the whole run (unlike the mappings fetch above) -- it just
+    # holds this run's billable pushes for a retry next sync.
+    billable_entries = build_bill_rate_payload(entries_to_sync)
+    bill_rates, hold_reasons = back_office_client.get_bill_rates(billable_entries)
+
+    processed_entries = [process_time_entry(e, toggl_lookups) for e in entries_to_sync]
+    return processed_entries, mappings, bill_rates, hold_reasons
+
+
+def would_hold(entry, mappings, bill_rates, hold_reasons=None):
+    """Single held-prediction path, shared by the run and the preflight.
+    Returns True ONLY when resolve_sync_mappings succeeds AND bill_rate_hold
+    holds -- the same order sync_single_entry uses (resolve_sync_mappings
+    first, then bill_rate_hold). A billable entry whose mappings FAIL is NOT
+    held here: the run marks it Failed via resolve_sync_mappings, never Held,
+    so the preflight must not predict it as held either. entry is a
+    normalized/processed dict (needs togglUserId/togglProjectId/togglClientId/
+    togglTaskId for resolve_sync_mappings and billable/togglEntryId for
+    bill_rate_hold)."""
+    if not resolve_sync_mappings(entry, mappings)["success"]:
+        return False
+    return bill_rate_hold(entry, bill_rates, hold_reasons) is not None
+
+
 def build_bill_rate_payload(entries):
     """Single source of the bill-rate fetch payload shape, shared by the real
     sync (sync_approved_entries) and the preview (routes._post_preflight_check)
@@ -416,40 +474,18 @@ def sync_approved_entries(force_entry_ids=None, on_progress=None, on_start=None)
         return {"synced": 0, "failed": 0, "held": 0, "alreadySynced": already_synced_count, "taggingFailed": 0,
                 "taggingErrors": [], "errors": []}
 
-    toggl_lookups = toggl.build_toggl_lookups()
-    mappings = back_office_client.build_mapping_lookups()  # aborts (raises) on failure, by design
-
-    # Merge Back Office task names for display (Sync_Log's "Toggl Task"
-    # column). Back Office's JSON keys are always strings; Toggl's Reports
-    # API returns task_id as an integer -- store both key forms so the
-    # process_time_entry lookup hits regardless of which type it's keyed by.
-    for tid, t in mappings["tasks"].items():
-        name = t.get("togglTaskName")
-        if name:
-            toggl_lookups["tasks"][tid] = name
-            if tid.isdigit():
-                toggl_lookups["tasks"][int(tid)] = name
-
-    # Bill rates: fetched once for every billable entry in the walk (a
-    # non-billable entry never needs one -- see sync_single_entry). Sends
-    # each entry's Toggl-side identity (2026-09-30), not just its id, so
-    # Back Office can resolve the rate LIVE instead of reading a stored
-    # column that can trail a same-run rate save or not exist yet for an
-    # entry logged after the last Toggl sync (see back_office_client.
-    # get_bill_rates). A fetch failure degrades to ({}, {}) rather than
-    # aborting the whole run (unlike the mappings fetch above) -- it just
-    # holds this run's billable pushes for a retry next sync.
-    billable_entries = build_bill_rate_payload(entries_to_sync)
-    bill_rates, hold_reasons = back_office_client.get_bill_rates(billable_entries)
+    # Bulk prep (Toggl lookups + Back Office mappings + task-name merge + one
+    # get_bill_rates) is shared with the preflight predictor so both gate held
+    # entries identically. processed_entries is entries_to_sync in order.
+    processed_entries, mappings, bill_rates, hold_reasons = prepare_approved_entries(entries_to_sync, toggl)
 
     results = {"synced": 0, "failed": 0, "held": 0, "alreadySynced": already_synced_count, "taggingFailed": 0,
                "taggingErrors": [], "errors": [], "syncedEntryIds": []}
     untagged_synced_ids = []
 
-    for entry in entries_to_sync:
+    for entry, processed in zip(entries_to_sync, processed_entries):
         entry_id = entry.get("id") or entry.get("time_entry_id")
         try:
-            processed = process_time_entry(entry, toggl_lookups)
             is_override = str(processed["togglEntryId"]) in force_ids
 
             # Budget wait: in-process, not a save-state-and-relaunch. Toggl's

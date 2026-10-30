@@ -315,16 +315,39 @@ def _post_preflight_check(params):
         to_sync = [e for e in approved_entries if str(e.get("id")) not in already_synced_map]
         to_sync_ids = [e.get("id") for e in to_sync]
 
-        # One get_bill_rates call, no per-entry Toggl calls -- same payload
-        # shape and hold rule as sync_approved_entries / sync_single_entry.
+        # Held CANDIDATES first, cheaply: a billable entry whose bill rate is
+        # unresolved per bill_rate_hold, off ONE get_bill_rates call (Back
+        # Office, not Toggl -- no Toggl quota spent here). This is the same
+        # payload shape and hold rule the run uses.
         payload = sync_engine.build_bill_rate_payload(to_sync)
         bill_rates, hold_reasons = back_office_client.get_bill_rates(payload)
-        held_count = sum(
-            1 for e in to_sync
+        candidates = [
+            e for e in to_sync
             if sync_engine.bill_rate_hold(
                 {"billable": e.get("billable"), "togglEntryId": e.get("id")}, bill_rates, hold_reasons
             ) is not None
-        )
+        ]
+
+        if not candidates:
+            # Nothing can be held -> held_count 0 with NO mapping/lookup calls.
+            # Skip the shared prep entirely (no build_toggl_lookups /
+            # build_mapping_lookups, so no Toggl workspace-bucket spend).
+            held_count = 0
+        else:
+            # Only now run the shared bulk prep ONCE (build_toggl_lookups'
+            # fetches share Toggl's workspace hourly quota bucket; the
+            # get_bill_rates above hit Back Office, not Toggl). A candidate
+            # whose mappings FAIL is dropped -- the run would mark it Failed,
+            # not Held -- via would_hold, which resolves mappings before the
+            # bill-rate hold, matching sync_single_entry's order.
+            processed_entries, mappings, prep_bill_rates, prep_hold_reasons = \
+                sync_engine.prepare_approved_entries(to_sync, toggl)
+            candidate_ids = {str(e.get("id")) for e in candidates}
+            held_count = sum(
+                1 for p in processed_entries
+                if str(p["togglEntryId"]) in candidate_ids
+                and sync_engine.would_hold(p, mappings, prep_bill_rates, prep_hold_reasons)
+            )
     except Exception:
         return {"entry_count": 0, "total_flagged": 0, "by_reason": {}, "held_count": 0, "corrections_url": default_url}
 
