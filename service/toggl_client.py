@@ -252,22 +252,44 @@ class TogglClient:
         self._clients_cache = clients
         return clients
 
+    PROJECTS_PAGE_SIZE = 200
+
+    def _fetch_projects_page(self, workspace_id, active_param):
+        """Paginates -- the unpaginated call silently truncated the archived
+        list below the workspace's real total (263 archived projects vs. a
+        ~151-item default page, confirmed live 2026-10-30), so any archived
+        project past the cutoff looked to the rest of the pipeline like it
+        had no project/client at all. The active list is currently well
+        under one page, but paginating it too costs nothing and avoids the
+        same failure mode if it grows."""
+        items, page = [], 1
+        while True:
+            batch = self._v9(
+                f"/workspaces/{workspace_id}/projects?active={active_param}"
+                f"&per_page={self.PROJECTS_PAGE_SIZE}&page={page}"
+            )
+            items.extend(batch)
+            if len(batch) < self.PROJECTS_PAGE_SIZE:
+                break
+            page += 1
+        return items
+
     def fetch_projects(self, active_only=True, force_refresh=False):
-        workspace_id = self.get_or_fetch_workspace_id()
+        """Archived projects are always fetched alongside active ones (not
+        lazily, as the old active_only split did) and cached together for
+        the life of this instance -- one fetch per run regardless of how
+        many times/which way callers ask, per the Toggl quota rules."""
         if not force_refresh and self._projects_cache is not None:
-            active, all_projects = self._projects_cache
-            return active if active_only else all_projects
-        active = self._v9(f"/workspaces/{workspace_id}/projects?active=true")
-        if active_only:
-            self._projects_cache = (active, None)
-            return active
+            active, archived = self._projects_cache
+            return active if active_only else active + archived
+        workspace_id = self.get_or_fetch_workspace_id()
+        active = self._fetch_projects_page(workspace_id, "true")
         try:
-            archived = self._v9(f"/workspaces/{workspace_id}/projects?active=false")
+            archived = self._fetch_projects_page(workspace_id, "false")
         except RuntimeError:
             archived = []
-        all_projects = active + archived
-        self._projects_cache = (active, all_projects)
-        return all_projects
+        self._projects_cache = (active, archived)
+        return active if active_only else active + archived
 
     def fetch_time_entries_all_users(self, start_date, end_date):
         """Reports API v3, paginated + flattened. Each row may contain a

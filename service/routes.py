@@ -354,7 +354,9 @@ def _preview_approved(params):
 
     users = toggl.fetch_users()
     user_map = {u["id"]: u.get("fullname") or u.get("name") or u.get("email") for u in users}
-    projects = toggl.fetch_projects()
+    # active_only=False -- an entry on an archived project otherwise shows
+    # Project "—" here and resolves to no client/customer at push time.
+    projects = toggl.fetch_projects(active_only=False)
     project_map = {p["id"]: p["name"] for p in projects}
 
     task_map = {}

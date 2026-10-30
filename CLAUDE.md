@@ -256,6 +256,54 @@ not just a bare id.
   end), so verification here is the test suite plus the in-container
   source check above.
 
+## ARCHIVED-PROJECT ENTRIES FAILED TO RESOLVE A QBO CUSTOMER (fixed 2026-10-30)
+
+`toggl_client.fetch_projects(active_only=False)` fetched `?active=false` with
+no pagination. The real incident: the workspace has 263 archived projects,
+but the endpoint's default page returned only ~151 of them -- any archived
+project past that cutoff (confirmed: WDCI2526, PGN, THRT25, THP) was simply
+absent from the lookup, even though `build_toggl_lookups()` (the push path)
+and `_preview_approved` (the preview path) both already requested the full
+(active+archived) set and both treat a missing project the same way as no
+project at all: `togglClientId` comes back `""`, so `resolve_sync_mappings`
+fails with `"No QBO customer mapping for client: (no client)"` -- Philip's
+2026-10-30 06:15 UTC run on 2026-04-27 to 05-03 (QB Bookkeeper finding
+F2026-032) pushed 84 entries, 20 of which failed exactly this way, all on
+those 4 projects. The preview's `_preview_approved` had a second, narrower
+bug on top of the same pagination gap: it called `fetch_projects()` with the
+`active_only=True` default, so even a correctly-paginated archived list was
+never fetched for the preview's Project column at all (shown as "—").
+
+- `TogglClient.fetch_projects` -- new `_fetch_projects_page` paginates both
+  the active and archived calls (`per_page=200`, loop until a page returns
+  fewer than that), and `fetch_projects` now always fetches and caches both
+  sets together per instance (one fetch per run, matching
+  [[anthropic-skills:plt-toggl]]'s per-run caching rule) rather than lazily
+  skipping the archived call when `active_only=True` -- the old lazy split
+  is also what caused a latent (never actually triggered) cache bug: a
+  cached active-only result had no way to later satisfy an `active_only=False`
+  call on the same instance. Confirmed live: fetching both pages costs 3
+  Toggl calls total (1 active + 2 archived, well inside the 240/hr org
+  bucket) and resolves all 4 previously-missing projects.
+- `routes._preview_approved` -- calls `fetch_projects(active_only=False)`
+  instead of the bare default, so the Project column shows the real name for
+  an entry on an archived project instead of "—".
+- Tests: `tests/test_toggl_client_projects.py` (pagination spans multiple
+  pages, per-instance caching, active_only filtering of the cached set),
+  `tests/test_preview_approved_archived_project.py` (preview resolves an
+  archived project's real name; active-project case unaffected). Full suite
+  38/38 green.
+- Deployed 2026-10-30T06:28:33Z (02:28:33 EDT; container rebuilt, healthy).
+  Verified live through the real public path (Cloudflare Access + TimeSync's
+  service token, not a mock): `previewApproved` for 2026-04-27 to 05-03 now
+  returns 0 entries with a blank Project, and all 20 of the originally-failed
+  entries resolve to their real project (WDCI2526 x14, PGN x2, THRT25 x1,
+  THP x2). Independently confirmed at the `sync_engine.resolve_sync_mappings`
+  level (dry run against live Toggl + Back Office data, no QBO write) that
+  all 20 resolve to a QBO customer: WDCI2526 -> United Arts of Central
+  Florida, PGN -> Orlando Shakes, THRT25 -> Seaworld Orlando, THP -> IceHouse
+  Theatre. Nothing was pushed -- Philip re-runs the week himself.
+
 ## MODEL ROUTING
 - L1 for config changes, CSS tweaks
 - L2 for mapping logic, sync workflow, API client changes
