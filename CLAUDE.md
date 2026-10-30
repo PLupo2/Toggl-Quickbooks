@@ -365,6 +365,58 @@ helpers.
   non-billable in Toggl); after this fix the preflight reads the live billable
   flag and would report 0 held, matching the run.
 
+## PREFLIGHT held_count MAPPING-AWARE (2026-10-30, DEPLOYED)
+
+Follow-up to PREFLIGHT held_count COMPUTED LIVE above: the popup still
+counted a billable+unresolved-rate entry as held even when its mappings
+fail, but the real run marks such an entry Failed (via
+`resolve_sync_mappings`), never Held -- so the popup over-reported held for
+any approved entry whose user/client/project/task isn't mapped in Back
+Office. Fixed by making the preflight predict held through the exact same
+two-step decision the run uses.
+
+- `sync_engine.prepare_approved_entries(entries_to_sync, toggl)` -- new,
+  extracts the run's per-entry bulk prep (Toggl `build_toggl_lookups` + Back
+  Office `build_mapping_lookups`, still raises/aborts on failure; the
+  task-name display merge; ONE `get_bill_rates`) into one shared function.
+  Returns `(processed_entries, mappings, bill_rates, hold_reasons)`. NO
+  per-entry Toggl calls. `sync_approved_entries` now uses it (zips raw +
+  processed through the loop) -- behavior unchanged.
+- `sync_engine.would_hold(entry, mappings, bill_rates, hold_reasons=None)` --
+  new single held-prediction path. True ONLY when `resolve_sync_mappings`
+  succeeds AND `bill_rate_hold` holds, in that order (matching
+  `sync_single_entry`). A billable entry whose mappings fail is NOT held.
+- `routes._post_preflight_check` -- computes held CANDIDATES cheaply first
+  (billable + unresolved rate per `bill_rate_hold`, off the one
+  `get_bill_rates` call -- Back Office, not Toggl). ZERO candidates =>
+  `held_count` 0 with NO `build_toggl_lookups`/`build_mapping_lookups` call
+  (no Toggl workspace-bucket spend). Candidates present => run
+  `prepare_approved_entries` ONCE and count only those passing `would_hold`,
+  dropping any whose mappings fail. Fail-open unchanged (a mapping-fetch
+  failure raises and is caught -> all-zeros); `get_preflight`'s `held_count`
+  still ignored.
+- Toggl quota: `build_toggl_lookups`' fetches share the workspace hourly
+  bucket (per [[anthropic-skills:plt-toggl]]), hit once per preflight only
+  when a held candidate exists; the `get_bill_rates` call hits Back Office,
+  not Toggl. Before/after per preflight: zero-candidate path spends the same
+  one Back Office `get_bill_rates` and nothing on Toggl's bucket (unchanged);
+  candidate path now additionally spends one `build_toggl_lookups` on the
+  Toggl workspace bucket + one Back Office `build_mapping_lookups`.
+- Tests: `tests/test_sync_engine_would_hold.py` (4), `tests/test_preflight_mapping_hold.py`
+  (7, incl. prediction==run parity and the zero-candidate no-call proof);
+  `tests/test_preflight_check_action.py`'s `_patch_common` gained prep mocks.
+  Full suite 55/55 green.
+- Deployed 2026-10-30T18:22Z (14:22 EDT; DB backed up first to
+  `data/timesync.pre-mapping-hold.20261030-182248.db`, integrity ok, 5253
+  sync_log rows; container rebuilt, healthy; `prepare_approved_entries` +
+  `would_hold` confirmed in the running image). Behavioral check (no sync)
+  through the real Cloudflare Access + TimeSync service-token path:
+  `POST https://timesync.pltheatrical.com/api {"action":"preflightCheck"}`
+  returned 200 with `entry_count: 0, held_count: 0` (production currently has
+  0 approved-not-yet-synced entries, exercising the zero-candidate
+  short-circuit live). The mapped/unmapped-candidate branches are covered by
+  the seeded unit/parity tests -- the same paths are now live in production.
+
 ## MODEL ROUTING
 - L1 for config changes, CSS tweaks
 - L2 for mapping logic, sync workflow, API client changes
