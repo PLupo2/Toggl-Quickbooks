@@ -282,6 +282,56 @@ TIMESYNC_HOLD_REASON_TEXT = {
 }
 
 
+def bill_rate_hold(entry, bill_rates=None, hold_reasons=None):
+    """Single source of the bill-rate hold decision, shared by the real sync
+    (sync_single_entry) and the preview (routes._post_preflight_check) so both
+    gate identically. Takes a normalized entry dict (needs only
+    entry["billable"] and entry["togglEntryId"]).
+
+    Returns None when the entry is NOT held; when it IS held, returns
+    {"held": True, "error": f"Waiting on bill rate: {reason_text}."}.
+
+    Hold rule: only entries with truthy entry.get("billable") are gated. A
+    billable entry whose id is missing from bill_rates OR whose value is None
+    is held; a resolved rate of 0 is NOT held. A non-billable entry is never
+    held. hold_reasons picks the reason text (unmapped user/project/task vs.
+    no rate); the fallback is "not yet resolved in Back Office for this entry".
+    """
+    if not entry.get("billable"):
+        return None
+    bill_rates = bill_rates or {}
+    hold_reasons = hold_reasons or {}
+    entry_id = str(entry["togglEntryId"])
+    if entry_id not in bill_rates or bill_rates[entry_id] is None:
+        reason = hold_reasons.get(entry_id)
+        reason_text = TIMESYNC_HOLD_REASON_TEXT.get(reason, "not yet resolved in Back Office for this entry")
+        return {
+            "success": False, "held": True,
+            "error": f"Waiting on bill rate: {reason_text}.",
+        }
+    return None
+
+
+def build_bill_rate_payload(entries):
+    """Single source of the bill-rate fetch payload shape, shared by the real
+    sync (sync_approved_entries) and the preview (routes._post_preflight_check)
+    so both send Back Office the exact same identity dicts. Takes raw Toggl
+    Reports entries; returns one identity dict per billable entry (sends each
+    entry's Toggl-side identity so Back Office can resolve the rate LIVE --
+    see back_office_client.get_bill_rates). A non-billable entry never needs
+    a rate (see bill_rate_hold), so it's skipped."""
+    return [
+        {
+            "toggl_entry_id": e.get("id") or e.get("time_entry_id"),
+            "toggl_user_id": e.get("user_id"),
+            "toggl_project_id": e.get("project_id"),
+            "toggl_task_id": e.get("task_id"),
+            "is_billable": True,
+        }
+        for e in entries if e.get("billable")
+    ]
+
+
 def sync_single_entry(entry, mappings, bill_rates=None, hold_reasons=None):
     """bill_rates: {str(togglEntryId): rate or None}, pre-fetched once per
     run for every billable entry in the walk (sync_approved_entries).
@@ -291,23 +341,19 @@ def sync_single_entry(entry, mappings, bill_rates=None, hold_reasons=None):
     entries are gated -- BillableStatus is what actually drives QBO's own
     billing, so a not-billable entry's rate is immaterial and it syncs
     exactly as before. 0 is a resolved rate (sent as-is); missing from the
-    map or explicitly None means unresolved -- held, not pushed."""
+    map or explicitly None means unresolved -- held, not pushed.
+
+    The hold test itself lives in bill_rate_hold so the preview path gates
+    identically; this path additionally sets hourlyRate on a resolved rate."""
     resolved = resolve_sync_mappings(entry, mappings)
     if not resolved["success"]:
         return resolved
 
+    held = bill_rate_hold(entry, bill_rates, hold_reasons)
+    if held is not None:
+        return held
     if entry.get("billable"):
-        bill_rates = bill_rates or {}
-        hold_reasons = hold_reasons or {}
-        entry_id = str(entry["togglEntryId"])
-        if entry_id not in bill_rates or bill_rates[entry_id] is None:
-            reason = hold_reasons.get(entry_id)
-            reason_text = TIMESYNC_HOLD_REASON_TEXT.get(reason, "not yet resolved in Back Office for this entry")
-            return {
-                "success": False, "held": True,
-                "error": f"Waiting on bill rate: {reason_text}.",
-            }
-        resolved["timeData"]["hourlyRate"] = bill_rates[entry_id]
+        resolved["timeData"]["hourlyRate"] = (bill_rates or {})[str(entry["togglEntryId"])]
 
     try:
         activity = qbo_client.create_time_activity(resolved["timeData"])
@@ -393,16 +439,7 @@ def sync_approved_entries(force_entry_ids=None, on_progress=None, on_start=None)
     # get_bill_rates). A fetch failure degrades to ({}, {}) rather than
     # aborting the whole run (unlike the mappings fetch above) -- it just
     # holds this run's billable pushes for a retry next sync.
-    billable_entries = [
-        {
-            "toggl_entry_id": e.get("id") or e.get("time_entry_id"),
-            "toggl_user_id": e.get("user_id"),
-            "toggl_project_id": e.get("project_id"),
-            "toggl_task_id": e.get("task_id"),
-            "is_billable": True,
-        }
-        for e in entries_to_sync if e.get("billable")
-    ]
+    billable_entries = build_bill_rate_payload(entries_to_sync)
     bill_rates, hold_reasons = back_office_client.get_bill_rates(billable_entries)
 
     results = {"synced": 0, "failed": 0, "held": 0, "alreadySynced": already_synced_count, "taggingFailed": 0,

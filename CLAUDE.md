@@ -304,6 +304,67 @@ never fetched for the preview's Project column at all (shown as "—").
   Florida, PGN -> Orlando Shakes, THRT25 -> Seaworld Orlando, THP -> IceHouse
   Theatre. Nothing was pushed -- Philip re-runs the week himself.
 
+## PREFLIGHT held_count COMPUTED LIVE (2026-10-30, DEPLOYED)
+
+The Sync Approved preflight popup reported a stale held_count. Back Office's
+`/api/timesync/preflight` returns a `held_count` derived from stored
+`time_entries.bill_rate` + a stored billable flag; the real sync, by
+contrast, holds off each entry's LIVE Toggl `billable` flag and a per-run
+live `get_bill_rates` resolve. When an entry's billable status or rate in
+Toggl differs from Back Office's stored row, the popup and the run
+disagreed. Real scenario (2026-10-30): the popup said "13 of 31 held" but
+the run held 0, because all 31 had gone non-billable in Toggl while Back
+Office still held stored billable/no-rate history. Fixed by making the
+preflight compute held_count the exact same way the sync does, off the same
+helpers.
+
+- `sync_engine.bill_rate_hold(entry, bill_rates=None, hold_reasons=None)` --
+  new module-level helper, now the single source of the hold decision. Takes
+  a normalized entry dict (needs only `billable` + `togglEntryId`), returns
+  `None` when not held or `{"held": True, "error": ...}` when held. Rule is
+  byte-identical to before: only `billable`-truthy entries are gated; an id
+  missing from `bill_rates` or whose value is `None` is held; a resolved rate
+  of 0 is NOT held; reason text via `TIMESYNC_HOLD_REASON_TEXT` with the same
+  "not yet resolved in Back Office for this entry" fallback.
+  `sync_single_entry` now calls it (no signature/behavior change).
+- `sync_engine.build_bill_rate_payload(entries)` -- new module-level helper,
+  the single source of the `get_bill_rates` payload shape (one identity dict
+  per billable raw-Toggl entry). `sync_approved_entries` uses it instead of
+  the inline comprehension.
+- `routes._post_preflight_check` -- now keeps the full approved-not-yet-synced
+  entry objects (not just ids), calls `build_bill_rate_payload` +
+  ONE `back_office_client.get_bill_rates` (no per-entry Toggl calls), and
+  counts held via `bill_rate_hold` over the billable entries. Back Office's
+  `get_preflight` is still called but used ONLY for
+  `total_flagged`/`by_reason`/`corrections_url`; its `held_count` is ignored.
+  Fail-open unchanged: any exception in the Toggl/get_bill_rates block returns
+  all-zeros; a `get_preflight` failure degrades to zeros for total_flagged
+  while the live held_count still stands.
+- Held-entry project naming in the confirm dialog (optional, reviewer-gated):
+  SKIPPED, no code change. The preflight path fetches only tags + all_entries;
+  raw entries carry only `project_id` and no project-name source is pulled
+  there, so naming held projects would require a new Toggl `fetch_projects`
+  call, which the reviewer constraint forbids on this path. `web/js/app.js`'s
+  confirm dialog is unchanged.
+- Tests: `tests/test_preflight_check_action.py` gained 5 cases (live held_count
+  ignores Back Office's; non-billable-live not held; billable resolved not
+  held; billable unresolved held; get_bill_rates failure fails open) and the
+  existing pass-through case updated (held_count now live-computed, Back
+  Office's 2 ignored -> 0). `tests/test_bill_rate_push.py` gained a parity
+  case asserting the set of entries `bill_rate_hold` marks held equals the set
+  `sync_single_entry` would hold for a fixed input. Full suite 44/44 green.
+- Deployed 2026-10-30T12:15Z (08:15 EDT; DB backed up first to
+  `data/timesync.pre-preflight-livehold.20261030-121520.db`, integrity ok,
+  5253 sync_log rows; container rebuilt, healthy; `bill_rate_hold` +
+  `build_bill_rate_payload` confirmed in the running image). Behavioral check
+  (no sync) through the real Cloudflare Access + TimeSync service-token path:
+  `POST https://timesync.pltheatrical.com/api {"action":"preflightCheck"}`
+  returned 200 with `entry_count: 0, held_count: 0` (production currently has
+  0 approved-not-yet-synced entries). Before/after for the 10/30 scenario: the
+  popup previously read "13 of 31 held" while the run held 0 (all 31 went
+  non-billable in Toggl); after this fix the preflight reads the live billable
+  flag and would report 0 held, matching the run.
+
 ## MODEL ROUTING
 - L1 for config changes, CSS tweaks
 - L2 for mapping logic, sync workflow, API client changes

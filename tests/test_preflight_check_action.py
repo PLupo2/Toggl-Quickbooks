@@ -13,7 +13,8 @@ from toggl_client import TogglClient
 DEFAULT_URL = "https://backoffice.pltheatrical.com/#/corrections?source=time-entry"
 
 
-def _patch_common(monkeypatch, approved_entries, already_synced=None, preflight_result=None):
+def _patch_common(monkeypatch, approved_entries, already_synced=None, preflight_result=None,
+                  bill_rates=None, hold_reasons=None):
     monkeypatch.setattr(routes.sync_engine, "get_import_date_range",
                          lambda: {"startDate": "2026-08-01", "endDate": "2026-08-31"})
     monkeypatch.setattr(routes.sync_engine, "get_approved_tag_name", lambda: "Approved")
@@ -22,12 +23,17 @@ def _patch_common(monkeypatch, approved_entries, already_synced=None, preflight_
     monkeypatch.setattr(TogglClient, "fetch_tags", lambda self, force_refresh=False: [])
     captured = {}
 
+    def _fake_get_bill_rates(payload):
+        captured["bill_rate_payload"] = payload
+        return (bill_rates or {}), (hold_reasons or {})
+
     def _fake_get_preflight(ids):
         captured["ids"] = ids
         return preflight_result if preflight_result is not None else {
             "total_flagged": 0, "by_reason": {}, "held_count": 0, "corrections_url": DEFAULT_URL,
         }
 
+    monkeypatch.setattr(back_office_client, "get_bill_rates", _fake_get_bill_rates)
     monkeypatch.setattr(back_office_client, "get_preflight", _fake_get_preflight)
     return captured
 
@@ -43,6 +49,8 @@ def test_collects_approved_not_yet_synced_ids_and_passes_through_result(monkeypa
         {"id": 102, "tags": ["Approved"]},
         {"id": 103, "tags": ["Other"]},  # not approved -- excluded
     ]
+    # Back Office returns held_count=2, but it is IGNORED -- held_count is
+    # computed live and these entries are non-billable, so live held_count=0.
     captured = _patch_common(
         monkeypatch, entries, already_synced={},
         preflight_result={"total_flagged": 1, "by_reason": {"no_task": 1}, "held_count": 2, "corrections_url": DEFAULT_URL},
@@ -55,9 +63,74 @@ def test_collects_approved_not_yet_synced_ids_and_passes_through_result(monkeypa
         "entry_count": 2,
         "total_flagged": 1,
         "by_reason": {"no_task": 1},
-        "held_count": 2,
+        "held_count": 0,  # live-computed, NOT Back Office's 2
         "corrections_url": DEFAULT_URL,
     }
+
+
+def test_held_count_ignores_back_office_and_is_computed_live(monkeypatch):
+    """One billable entry with no resolved rate (held) + one billable entry
+    whose rate resolves live (not held). Back Office claims held_count=99;
+    the live count is 1."""
+    entries = [
+        {"id": 501, "billable": True, "user_id": 9, "project_id": 3, "task_id": 7, "tags": ["Approved"]},
+        {"id": 502, "billable": True, "user_id": 9, "project_id": 4, "task_id": 8, "tags": ["Approved"]},
+    ]
+    _patch_common(
+        monkeypatch, entries, already_synced={},
+        preflight_result={"total_flagged": 0, "by_reason": {}, "held_count": 99, "corrections_url": DEFAULT_URL},
+        bill_rates={"502": 22.0},  # 501 unresolved -> held; 502 resolved -> not held
+        hold_reasons={"501": "no_rate"},
+    )
+
+    result = routes._post_preflight_check({})
+    assert result["held_count"] == 1
+    assert result["entry_count"] == 2
+
+
+def test_live_non_billable_entry_with_stored_history_not_held(monkeypatch):
+    """An entry that is non-billable LIVE in Toggl is never counted as held,
+    even if Back Office's stored held_count would include it -- the preflight
+    reads the live billable flag off the raw Toggl entry, not stored state."""
+    entries = [{"id": 601, "billable": False, "user_id": 9, "project_id": 3, "task_id": 7, "tags": ["Approved"]}]
+    captured = _patch_common(
+        monkeypatch, entries, already_synced={},
+        preflight_result={"total_flagged": 0, "by_reason": {}, "held_count": 1, "corrections_url": DEFAULT_URL},
+    )
+
+    result = routes._post_preflight_check({})
+    assert result["held_count"] == 0
+    # non-billable -> excluded from the bill-rate payload entirely
+    assert captured["bill_rate_payload"] == []
+
+
+def test_billable_resolved_rate_not_held(monkeypatch):
+    entries = [{"id": 701, "billable": True, "user_id": 9, "project_id": 3, "task_id": 7, "tags": ["Approved"]}]
+    _patch_common(monkeypatch, entries, already_synced={}, bill_rates={"701": 0})  # 0 is a resolved rate
+
+    result = routes._post_preflight_check({})
+    assert result["held_count"] == 0
+
+
+def test_billable_unresolved_rate_is_held(monkeypatch):
+    entries = [{"id": 801, "billable": True, "user_id": 9, "project_id": 3, "task_id": 7, "tags": ["Approved"]}]
+    _patch_common(monkeypatch, entries, already_synced={}, bill_rates={})  # not in map -> held
+
+    result = routes._post_preflight_check({})
+    assert result["held_count"] == 1
+
+
+def test_bill_rate_fetch_failure_fails_open(monkeypatch):
+    """A get_bill_rates exception inside the try block returns all-zeros."""
+    entries = [{"id": 901, "billable": True, "user_id": 9, "project_id": 3, "task_id": 7, "tags": ["Approved"]}]
+    _patch_common(monkeypatch, entries, already_synced={})
+
+    def _raise(payload):
+        raise RuntimeError("Back Office unreachable")
+
+    monkeypatch.setattr(back_office_client, "get_bill_rates", _raise)
+    result = routes._post_preflight_check({})
+    assert result == {"entry_count": 0, "total_flagged": 0, "by_reason": {}, "held_count": 0, "corrections_url": DEFAULT_URL}
 
 
 def test_excludes_already_synced_entries(monkeypatch):

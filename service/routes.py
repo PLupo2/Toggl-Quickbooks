@@ -308,16 +308,36 @@ def _post_preflight_check(params):
             if any(t.lower() == approved_tag.lower() for t in resolve_entry_tags(e, tag_map))
         ]
         already_synced_map = sync_engine.build_already_synced_map()
-        to_sync_ids = [e.get("id") for e in approved_entries if str(e.get("id")) not in already_synced_map]
+        # Keep the full entry objects (not just ids) so held_count can be
+        # computed LIVE off each entry's real billable flag + the same
+        # get_bill_rates fetch the real sync run uses -- Back Office's stored
+        # held_count can trail reality, so it is ignored entirely below.
+        to_sync = [e for e in approved_entries if str(e.get("id")) not in already_synced_map]
+        to_sync_ids = [e.get("id") for e in to_sync]
+
+        # One get_bill_rates call, no per-entry Toggl calls -- same payload
+        # shape and hold rule as sync_approved_entries / sync_single_entry.
+        payload = sync_engine.build_bill_rate_payload(to_sync)
+        bill_rates, hold_reasons = back_office_client.get_bill_rates(payload)
+        held_count = sum(
+            1 for e in to_sync
+            if sync_engine.bill_rate_hold(
+                {"billable": e.get("billable"), "togglEntryId": e.get("id")}, bill_rates, hold_reasons
+            ) is not None
+        )
     except Exception:
         return {"entry_count": 0, "total_flagged": 0, "by_reason": {}, "held_count": 0, "corrections_url": default_url}
 
+    # get_preflight supplies ONLY total_flagged / by_reason / corrections_url;
+    # its held_count is ignored (live held_count above is authoritative). Its
+    # own fail-open path degrades to zeros, so total_flagged stays 0 on a Back
+    # Office failure while the live held_count still stands.
     result = back_office_client.get_preflight(to_sync_ids)
     return {
         "entry_count": len(to_sync_ids),
         "total_flagged": result.get("total_flagged", 0),
         "by_reason": result.get("by_reason") or {},
-        "held_count": result.get("held_count", 0),
+        "held_count": held_count,
         "corrections_url": result.get("corrections_url") or default_url,
     }
 

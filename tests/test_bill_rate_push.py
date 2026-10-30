@@ -242,3 +242,46 @@ def test_qbo_client_omits_hourly_rate_when_absent(monkeypatch):
     })
 
     assert "HourlyRate" not in captured["payload"]
+
+
+# --- Parity: preflight and real sync hold the SAME entries ------------------
+
+def test_preflight_and_sync_hold_identical_sets(monkeypatch):
+    """The preview (via bill_rate_hold over raw Toggl entries) and the real
+    sync (sync_single_entry) must mark the same entries held for a fixed set
+    of (entry, bill_rates, hold_reasons) inputs -- both go through the one
+    bill_rate_hold helper, so there is no second place for the rule to drift.
+    """
+    # Raw-Toggl-shaped entries, as the preflight path sees them.
+    raw = [
+        {"id": 1, "billable": True, "user_id": 1, "project_id": 100, "task_id": 1000},   # billable, no rate -> held
+        {"id": 2, "billable": True, "user_id": 1, "project_id": 100, "task_id": 1000},   # billable, rate 22 -> push
+        {"id": 3, "billable": True, "user_id": 1, "project_id": 100, "task_id": 1000},   # billable, rate 0 -> push
+        {"id": 4, "billable": False, "user_id": 1, "project_id": 100, "task_id": 1000},  # non-billable -> never held
+    ]
+    bill_rates = {"2": 22.0, "3": 0}
+    hold_reasons = {"1": "no_rate"}
+
+    # Preflight-style decision (normalized dict with only billable + id).
+    preflight_held = {
+        e["id"] for e in raw
+        if sync_engine.bill_rate_hold(
+            {"billable": e.get("billable"), "togglEntryId": e.get("id")}, bill_rates, hold_reasons
+        ) is not None
+    }
+
+    # Real-sync decision via sync_single_entry (QBO stubbed; all map cleanly).
+    _mock_create_time_activity(monkeypatch)
+
+    def _processed(e):
+        p = _entry(billable=e["billable"])
+        p["togglEntryId"] = e["id"]
+        return p
+
+    sync_held = set()
+    for e in raw:
+        res = sync_engine.sync_single_entry(_processed(e), MAPPINGS, bill_rates, hold_reasons)
+        if res.get("held"):
+            sync_held.add(e["id"])
+
+    assert preflight_held == sync_held == {1}
