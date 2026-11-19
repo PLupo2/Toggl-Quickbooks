@@ -228,6 +228,7 @@ const Pages = {
     const pendingHtml = data.sync.hasPendingSync
       ? '<span class="badge badge-warning">Paused</span>'
       : '';
+    const naCount = data.needs_attention_count || 0;
     const used = parseInt(data.api.lastSyncCalls) || 0;
     const budget = parseInt(data.api.budget) || 180;
     const pct = budget > 0 ? Math.round((used / budget) * 100) : 0;
@@ -251,6 +252,13 @@ const Pages = {
           <div class="stat-value" style="font-size:16px">${data.api.lastSyncCalls || 0}/${data.api.budget}</div>
           <div class="progress"><div class="progress-bar ${barClass}" style="width:${pct}%"></div></div>
           <div class="stat-detail">${data.api.lastSyncCalls ? 'Last sync used ' + data.api.lastSyncCalls + ' of ' + data.api.budget + ' calls/hr' : 'No sync data yet'}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Needs Attention</div>
+          <div class="stat-value" style="font-size:16px;color:${naCount > 0 ? 'var(--warning)' : 'var(--success)'}">${naCount}</div>
+          <div class="stat-detail">${naCount > 0
+            ? `<a href="#" onclick="App.navigate('sync');return false">Review on Sync Entries →</a>`
+            : 'All synced entries clear'}</div>
         </div>
       </div>`;
   },
@@ -324,11 +332,77 @@ const Pages = {
         review them, then click Sync to create time entries in QuickBooks.
       </div>
       <div id="sync-job-banner-slot"></div>
+      <div id="needs-attention-slot"></div>
       <div class="card" id="sync-step1">${Pages._sectionLoading()}</div>
       <div class="card" id="sync-step2">${Pages._sectionLoading()}</div>`;
 
     Pages._loadSyncStep1(_rt);
     Pages._loadSyncStep2(_rt);
+    Pages._loadNeedsAttention(_rt);
+  },
+
+  // Needs attention: entries that didn't sync and still need a human fix,
+  // grouped by remedy so each fix is stated once. Purely reflects sync_log
+  // state (getNeedsAttention), so a fixed-and-resynced entry drops off on the
+  // next load. Non-blocking: any load failure just hides the section rather
+  // than breaking the Sync page.
+  async _loadNeedsAttention(_rt) {
+    const slot = document.getElementById('needs-attention-slot');
+    if (!slot) return;
+    try {
+      const data = await API.get('getNeedsAttention');
+      if (Pages._stale(_rt) || !slot) return;
+      slot.innerHTML = Pages._renderNeedsAttention(data);
+    } catch (err) {
+      if (!Pages._stale(_rt) && slot) slot.innerHTML = '';
+    }
+  },
+
+  _renderNeedsAttention(data) {
+    if (!data || !data.count) return '';  // hidden when zero
+
+    // Group rows by remedy (reason): the instruction is stated once per group,
+    // then its rows. No reason codes are shown to the operator.
+    const groups = [];
+    const byReason = {};
+    data.entries.forEach(e => {
+      if (!byReason[e.reason]) {
+        byReason[e.reason] = { instruction: e.instruction, link: e.link, link_label: e.link_label, rows: [] };
+        groups.push(byReason[e.reason]);
+      }
+      byReason[e.reason].rows.push(e);
+    });
+
+    const groupsHtml = groups.map(g => {
+      const rows = g.rows.map(r => `
+        <tr>
+          <td>${esc(r.project) || '<em>—</em>'}</td>
+          <td>${esc(r.person)}</td>
+          <td>${esc(formatLogDate(r.date))}</td>
+          <td>${esc(String(r.hours))}h</td>
+        </tr>`).join('');
+      return `
+        <div class="na-group">
+          <div class="na-instruction">
+            <span>${esc(g.instruction)}</span>
+            <a class="na-link" href="${esc(g.link)}" target="_blank" rel="noopener">${esc(g.link_label)} →</a>
+          </div>
+          <div class="table-wrap">
+            <table class="na-table">
+              <thead><tr><th>Project</th><th>Person</th><th>Date</th><th>Hours</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>`;
+    }).join('');
+
+    const label = data.count === 1 ? 'entry needs' : 'entries need';
+    return `
+      <div class="card na-card">
+        <div class="card-title">⚠ ${data.count} ${label} attention</div>
+        <p class="na-subtitle">These approved entries didn't sync. Fix each group below, then sync again — they'll clear automatically once resolved.</p>
+        ${groupsHtml}
+      </div>`;
   },
 
   async _loadSyncStep1(_rt) {
@@ -527,19 +601,15 @@ const Pages = {
         if (hasFlags || hasHeld) {
           const parts = [];
           if (hasFlags) {
-            const reasons = Object.keys(preflight.by_reason || {})
-              .map(r => `  ${r}: ${preflight.by_reason[r]}`)
-              .join('\n');
             parts.push(
-              `${preflight.total_flagged} of ${preflight.entry_count} approved entries ` +
-              `have unresolved corrections in Back Office:\n\n${reasons}\n\n` +
-              `These entries may sync with incomplete data (missing task or project).`
+              `${preflight.total_flagged} of ${preflight.entry_count} approved entries need attention ` +
+              `before they'll sync — see the "Needs attention" section above for exactly what to fix.`
             );
           }
           if (hasHeld) {
             parts.push(
-              `${preflight.held_count} of ${preflight.entry_count} approved entries have no resolved ` +
-              `bill rate and will be held (not pushed) this run.`
+              `${preflight.held_count} of ${preflight.entry_count} approved entries have no bill rate ` +
+              `set and will sync held (not pushed) this run.`
             );
           }
           // Modal.confirm only resolves on an explicit button click -- unlike
@@ -673,7 +743,12 @@ const Pages = {
           // sync, no action needed here beyond making it visible.
           Toast.error(`⏳ ${status.held} entries held — waiting on a bill rate in Back Office. They'll retry automatically on the next sync.`);
         }
-        Pages.sync(); // Reload preview, clears the in-progress banner
+        const stillNeedAttention = (status.failed || 0) + (status.held || 0);
+        if (stillNeedAttention > 0) {
+          const noun = stillNeedAttention === 1 ? 'entry' : 'entries';
+          Toast.info(`${stillNeedAttention} ${noun} still need attention — see the Needs attention section below.`, { persist: true });
+        }
+        Pages.sync(); // Reload preview + Needs attention, clears the in-progress banner
         return;
       }
 
@@ -827,7 +902,17 @@ const Pages = {
           const entryDate = formatLogDate(e['Date']);
           // Duration - handle spreadsheet date serialization (1899-12-30 epoch) or formatted strings
           const duration = formatLogDuration(e['Duration']);
-          const fixLink = mappingErrorLink(e['Error']);
+          // Server-provided fix guidance (Failed/Held rows): a plain-English
+          // instruction + a deep link, from the shared remedy helper. Falls
+          // back to the legacy prefix-matched link if remedy is absent.
+          const remedy = e.remedy;
+          const fixLink = remedy ? remedy.link : mappingErrorLink(e['Error']);
+          const fixHtml = remedy
+            ? `<br><span class="log-fix">${esc(remedy.instruction)}</span> <a href="${esc(remedy.link)}" target="_blank" rel="noopener">${esc(remedy.link_label)} →</a>`
+            : (fixLink ? `<br><a href="${fixLink}" target="_blank" rel="noopener">Fix in Back Office →</a>` : '');
+          const resolvedTag = e.resolved_later
+            ? ' <span class="badge badge-success resolved-later-tag">resolved later</span>'
+            : '';
           return `
             <tr>
               <td>${entryDate}</td>
@@ -836,10 +921,10 @@ const Pages = {
               <td>${e['Toggl Task'] || '<em>—</em>'}</td>
               <td>${e['Description'] || ''}</td>
               <td>${duration}</td>
-              <td><span class="badge ${statusClass}">${e['Status']}</span></td>
+              <td><span class="badge ${statusClass}">${e['Status']}</span>${resolvedTag}</td>
               <td style="color:${errorColor};font-size:12px">
                 ${e['Error'] || ''}
-                ${fixLink ? `<br><a href="${fixLink}" target="_blank" rel="noopener">Fix in Back Office →</a>` : ''}
+                ${fixHtml}
               </td>
             </tr>`;
         }).join('');
@@ -1154,6 +1239,18 @@ const Toast = {
 // ===========================================================================
 // Utilities
 // ===========================================================================
+
+// HTML-escape user/Toggl-derived text before inserting it into a template
+// literal (project/person names, remedy instructions). Returns '' for null.
+function esc(s) {
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 function formatDuration(seconds) {
   if (!seconds) return '0:00';

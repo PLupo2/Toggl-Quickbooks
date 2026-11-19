@@ -91,14 +91,19 @@ def log_sync_result(entry, qbo_id, status, error):
            (synced_at, toggl_entry_id, qbo_timeactivity_id, date, duration,
             toggl_user, qbo_employee, toggl_client, toggl_project,
             qbo_customer, qbo_project, toggl_task, qbo_service_item,
-            description, billable, status, error)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            description, billable, status, error,
+            toggl_project_id, toggl_task_id, toggl_user_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             datetime.now(timezone.utc).isoformat(), str(entry["togglEntryId"]), str(qbo_id or ""),
             entry["date"], entry["durationFormatted"], entry["togglUser"], "",
             entry["togglClient"], entry["togglProject"], "", "",
             entry["togglTask"], "", entry["description"],
             1 if entry.get("billable") else 0, status, error or "",
+            # Toggl-side ids (2026-11-19) -- so a stored row can build its own
+            # remedy deep links. The processed entry already carries these.
+            str(entry.get("togglProjectId") or ""), str(entry.get("togglTaskId") or ""),
+            str(entry.get("togglUserId") or ""),
         ),
     )
     conn.commit()

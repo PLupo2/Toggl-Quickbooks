@@ -57,7 +57,7 @@ def _base_patches(monkeypatch, entries, bill_rates=None, hold_reasons=None):
         counters["toggl_lookups"] += 1
         return {k: dict(v) for k, v in _TOGGL_LOOKUPS.items()}
 
-    def _ml():
+    def _ml(abort_on_failure=True):
         counters["mapping_lookups"] += 1
         return _MAPPINGS
 
@@ -71,23 +71,26 @@ def _raw(entry_id, billable=True, project_id=3):
             "project_id": project_id, "task_id": 7, "tags": ["Approved"]}
 
 
-def test_zero_candidates_makes_no_mapping_or_lookup_call(monkeypatch):
-    # A non-billable entry is never a held candidate -> the shared prep is
-    # skipped entirely, so neither build_toggl_lookups nor build_mapping_lookups
-    # runs (no Toggl workspace-bucket spend).
+def test_zero_candidates_skips_toggl_prep_but_fetches_mappings(monkeypatch):
+    # A non-billable entry is never a held candidate -> the Toggl-quota-expensive
+    # build_toggl_lookups is skipped entirely (no Toggl workspace-bucket spend).
+    # The live correction counts still need mappings, so build_mapping_lookups
+    # runs exactly once (Back Office, not Toggl).
     counters = _base_patches(monkeypatch, [_raw(1, billable=False)])
     result = routes._post_preflight_check({})
     assert result["held_count"] == 0
     assert counters["toggl_lookups"] == 0
-    assert counters["mapping_lookups"] == 0
+    assert counters["mapping_lookups"] == 1
 
 
-def test_resolved_rate_candidate_absent_skips_prep(monkeypatch):
-    # Billable but with a resolved rate -> not a candidate -> no prep.
+def test_resolved_rate_candidate_absent_skips_toggl_prep(monkeypatch):
+    # Billable but with a resolved rate -> not a candidate -> no Toggl prep, but
+    # the one mapping fetch for correction counts still happens.
     counters = _base_patches(monkeypatch, [_raw(2)], bill_rates={"2": 22.0})
     result = routes._post_preflight_check({})
     assert result["held_count"] == 0
-    assert counters["mapping_lookups"] == 0
+    assert counters["toggl_lookups"] == 0
+    assert counters["mapping_lookups"] == 1
 
 
 def test_candidate_with_unmapped_client_not_counted(monkeypatch):

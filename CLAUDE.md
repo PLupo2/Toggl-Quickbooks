@@ -460,6 +460,60 @@ Two bugs found by Philip 2026-11-18.
   file, contains `Modal.confirm`/`modal-overlay`/"Sync anyway"/"Review
   corrections", and has no bare `confirm(` call left in the sync flow.
 
+## NEEDS-ATTENTION FIX GUIDANCE (2026-11-19, DEPLOYED)
+
+Every surface that tells Philip an entry didn't sync now shows the SAME
+plain-English fix + a deep link, instead of a raw error string or reason code.
+
+- `service/remedy.py` (new) -- single source of fix guidance. Pure, no network:
+  `remedy_for(status, error, row, mappings=None, workspace_id="")` classifies a
+  reason code from the exact strings `sync_engine` emits (reusing
+  `TIMESYNC_HOLD_REASON_TEXT`) and returns `{reason, instruction, link,
+  link_label}`. Links: registry `#/registry` (NOT `#/clients`); Toggl deep link
+  `track.toggl.com/<ws>/projects/<pid>`; both fall back safely
+  (registry / Toggl projects list) when an id is missing. The Back Office
+  project mapping has no internal project-id field (only qbo*), so `no_rate`
+  falls back to the registry -- documented, not a bug.
+- `service/db.py` + `sync_engine.log_sync_result` -- sync_log gained
+  `toggl_project_id` / `toggl_task_id` / `toggl_user_id` (TEXT, additive ALTER,
+  idempotent); new rows persist them. `service/backfill_toggl_ids.py` (new,
+  re-runnable, NULL-only, no Toggl calls) fills them on latest Failed/Held rows
+  by name from one Back Office mapping fetch. DB backed up first per the
+  new-column rule (`data/timesync.pre-attention-ids.20261119-162247.db`,
+  integrity ok, 6234 rows); backfill run in-container filled 2 task ids
+  (user/project names don't match the mapping's QBO names -> left NULL -> safe
+  registry/list fallback).
+- `service/routes.py` -- new `getNeedsAttention` (READ action): one object per
+  latest-Failed/Held `toggl_entry_id` with remedy fields + hours; drops off once
+  a later Success row exists (purely sync_log-derived, no Toggl call).
+  `getSyncLog` Failed/Held rows now carry `remedy` + `resolved_later`.
+  `getDashboard` returns `needs_attention_count`. `preflightCheck` now computes
+  `total_flagged` / `by_reason` (unknown_user/unknown_project/no_task) LIVE off
+  the raw Toggl ids + ONE mapping fetch -- Back Office's `get_preflight` is no
+  longer called (its stored counts can trail reality); the zero-candidate Toggl
+  short-circuit and fail-open-to-zeros are intact.
+- `web/js/app.js` + `web/css/styles.css` -- Sync Entries shows a grouped
+  "Needs attention" card above the preview (hidden when zero); the pre-sync
+  `Modal.confirm` and post-sync toast point to it with a count (no reason
+  codes); Sync Log Failed/Held rows show the inline instruction + link and a
+  "resolved later" tag once re-synced; the dashboard Sync Status card shows a
+  "Needs Attention" tile linking to Sync Entries. New `esc()` helper escapes
+  user-derived text. No cache-buster needed (app.py sends `Cache-Control:
+  no-cache`).
+- Tests: `tests/test_remedy.py` (14), `tests/test_backfill_toggl_ids.py` (7),
+  `tests/test_needs_attention.py` (13); `tests/test_preflight_check_action.py`
+  + `tests/test_preflight_mapping_hold.py` updated for the live correction
+  counts. Full suite 88/88 green.
+- Deployed 2026-11-19 ~16:22 UTC (container rebuilt, healthy; the three columns
+  + `getNeedsAttention` + `remedy.py` confirmed in the running image; row count
+  unchanged 6234). Verified live through the real Cloudflare Access + TimeSync
+  service-token path, NO sync run:
+  `POST .../api {"action":"preflightCheck"}` -> 200
+  `{entry_count:16, total_flagged:3, by_reason:{no_task:3}, held_count:6}`;
+  `GET .../api?action=getNeedsAttention` -> 200, count 26, first entry a real
+  remedy ("HTS: no bill rate for Electrics. Set the rate in Back Office.").
+  Back Office code untouched.
+
 ## MODEL ROUTING
 - L1 for config changes, CSS tweaks
 - L2 for mapping logic, sync workflow, API client changes

@@ -31,6 +31,7 @@ from fastapi.responses import JSONResponse
 import back_office_client
 import core_client
 import qbo_client
+import remedy
 import sync_engine
 from db import get_db, get_setting, set_setting
 from toggl_client import TogglClient, extract_duration_seconds, resolve_entry_tags
@@ -38,6 +39,17 @@ from toggl_client import TogglClient, extract_duration_seconds, resolve_entry_ta
 router = APIRouter()  # CF Access verification is applied once in app.py, ahead of this router
 
 CONNECTION_STATUS_TTL_SECONDS = 3600  # auto-refresh-on-read if the cache is older than this
+
+# The latest-row-per-entry set the Needs Attention surface reads: a toggl_entry_id
+# whose most recent sync_log row is Failed or Held (not Success, and not the
+# informational 'Already synced' status). An entry drops off automatically once
+# a later Success row exists -- no re-resolution, purely sync_log-derived.
+_LATEST_NEEDS_ATTENTION_SQL = """
+    SELECT {cols} FROM sync_log s
+    JOIN (SELECT toggl_entry_id, MAX(id) mid FROM sync_log GROUP BY toggl_entry_id) t
+      ON s.id = t.mid
+    WHERE s.status IN ('Failed', 'Held')
+"""
 
 
 def _resp(data, status_code=200):
@@ -48,13 +60,77 @@ def _error(message, status_code=500):
     return _resp({"error": message}, status_code)
 
 
+def _duration_to_hours(duration):
+    """sync_log.duration is stored as 'H:MM' (durationFormatted) -- turn it into
+    decimal hours for display. Any unexpected shape degrades to 0."""
+    try:
+        h, m = str(duration or "0:00").split(":")
+        return round(int(h) + int(m) / 60, 2)
+    except Exception:
+        return 0
+
+
+def _cached_workspace_id():
+    """The Toggl workspace id, read from connection_status_cache -- NO Toggl
+    call. Lets remedy build Toggl deep links from a stored row. '' if the cache
+    is empty (remedy then falls back to the Toggl projects list link)."""
+    conn = get_db()
+    row = conn.execute("SELECT toggl_workspace_id FROM connection_status_cache WHERE id=1").fetchone()
+    conn.close()
+    return (row["toggl_workspace_id"] if row else "") or ""
+
+
+def _needs_attention_mappings():
+    """ONE read-only Back Office mapping fetch shared across a request's row
+    enrichments (remedy link building). Degrades to None on failure -- remedy
+    then builds its registry/list fallback links, never a broken one."""
+    return back_office_client.build_mapping_lookups(abort_on_failure=False)
+
+
 # ============================================================================
 # ACTION HANDLERS (pure functions: params in, data dict out or raises)
 # ============================================================================
 
+def _get_needs_attention(params):
+    """Entries that didn't sync and still need a human fix: one object per
+    latest-not-Success (Failed/Held) toggl_entry_id, each carrying a plain fix
+    instruction + deep link from the shared remedy helper. Purely sync_log-
+    derived -- NO Toggl call, no re-resolution -- so an entry drops off the
+    instant a later Success row exists. `reason` is included so the frontend
+    can group rows by remedy."""
+    conn = get_db()
+    rows = conn.execute(
+        _LATEST_NEEDS_ATTENTION_SQL.format(cols="s.*") + " ORDER BY s.id DESC"
+    ).fetchall()
+    conn.close()
+
+    mappings = _needs_attention_mappings()
+    workspace_id = _cached_workspace_id()
+
+    entries = []
+    for row in rows:
+        r = dict(row)
+        rem = remedy.remedy_for(r["status"], r["error"], r, mappings, workspace_id)
+        entries.append({
+            "entry_id": r["toggl_entry_id"],
+            "project": r["toggl_project"],
+            "person": r["toggl_user"],
+            "date": r["date"],
+            "hours": _duration_to_hours(r["duration"]),
+            "reason": rem["reason"],
+            "instruction": rem["instruction"],
+            "link": rem["link"],
+            "link_label": rem["link_label"],
+        })
+    return {"count": len(entries), "entries": entries}
+
+
 def _get_dashboard(params):
     conn = get_db()
     log_entries = conn.execute("SELECT COUNT(*) c FROM sync_log").fetchone()["c"]
+    needs_attention_count = conn.execute(
+        _LATEST_NEEDS_ATTENTION_SQL.format(cols="COUNT(*) c")
+    ).fetchone()["c"]
     conn.close()
 
     date_range = sync_engine.get_import_date_range()
@@ -78,6 +154,7 @@ def _get_dashboard(params):
     # happen invisibly inside a still-"running" job. Always reported as
     # not-pending; a genuinely in-flight job is what getSyncJobStatus is for.
     return {
+        "needs_attention_count": needs_attention_count,
         "sync": {
             "lastSync": get_setting("LAST_SYNC_DATE", "Never"),
             "logEntries": log_entries,
@@ -167,19 +244,50 @@ def _get_sync_log(params):
         args.append(f"%{params['client']}%")
     where_clause = f"WHERE {' AND '.join(where)}" if where else ""
 
+    # id + the Toggl-side ids are selected alongside the header columns so each
+    # Failed/Held row can be enriched (remedy links, resolved_later) without a
+    # second per-row query; they are not added to the header-keyed payload.
+    extra_cols = ["id", "toggl_project_id", "toggl_task_id", "toggl_user_id"]
     conn = get_db()
     total = conn.execute(f"SELECT COUNT(*) c FROM sync_log {where_clause}", args).fetchone()["c"]
     rows = conn.execute(
-        f"SELECT {','.join(SYNC_LOG_COLS)} FROM sync_log {where_clause} ORDER BY id DESC LIMIT ?",
+        f"SELECT {','.join(SYNC_LOG_COLS + extra_cols)} FROM sync_log {where_clause} ORDER BY id DESC LIMIT ?",
         (*args, limit),
     ).fetchall()
+
+    # resolved_later: a Failed/Held row whose toggl_entry_id has a LATER Success
+    # row (id greater) was fixed and re-synced since. One grouped query over just
+    # the entry ids on this page, not a per-row lookup.
+    flagged = [r for r in rows if r["status"] in ("Failed", "Held")]
+    success_max = {}
+    entry_ids = {r["toggl_entry_id"] for r in flagged}
+    if entry_ids:
+        placeholders = ",".join("?" * len(entry_ids))
+        for sr in conn.execute(
+            f"SELECT toggl_entry_id, MAX(id) mid FROM sync_log "
+            f"WHERE status='Success' AND toggl_entry_id IN ({placeholders}) GROUP BY toggl_entry_id",
+            tuple(entry_ids),
+        ):
+            success_max[sr["toggl_entry_id"]] = sr["mid"]
     conn.close()
+
+    mappings = _needs_attention_mappings() if flagged else None
+    workspace_id = _cached_workspace_id() if flagged else ""
+
     entries = []
     for row in rows:
         obj = {}
         for header, col in zip(SYNC_LOG_HEADERS, SYNC_LOG_COLS):
             val = row[col]
             obj[header] = bool(val) if col == "billable" else val
+        if row["status"] in ("Failed", "Held"):
+            rem = remedy.remedy_for(row["status"], row["error"], dict(row), mappings, workspace_id)
+            obj["remedy"] = {
+                "instruction": rem["instruction"], "link": rem["link"],
+                "link_label": rem["link_label"], "reason": rem["reason"],
+            }
+            later = success_max.get(row["toggl_entry_id"])
+            obj["resolved_later"] = bool(later and later > row["id"])
         entries.append(obj)
     return {"entries": entries, "total": total}
 
@@ -289,13 +397,22 @@ def _get_project_pending_entries(params):
 
 
 def _post_preflight_check(params):
-    """Warn before Sync Approved pushes: collect the same approved-not-yet-synced
-    entry IDs _preview_approved would push and ask Back Office whether any have
-    unresolved corrections or an unresolved bill rate. Fail open -- any failure
-    (Toggl fetch, Back Office round trip, anything) returns total_flagged=0 /
-    held_count=0 so the caller (runSync's non-blocking preflight) proceeds with
-    the sync exactly as if nothing were flagged."""
+    """Warn before Sync Approved pushes. Everything is computed LIVE from the
+    raw Toggl entries + ONE Back Office mapping fetch -- no call to Back Office's
+    get_preflight (its stored counts can trail reality):
+
+    - held_count: billable entries whose bill rate is unresolved AND whose
+      mappings resolve (an unmapped entry is Failed by the run, not Held), via
+      the shared bill_rate_hold / would_hold the real sync uses.
+    - total_flagged / by_reason: the live correction counts an operator must
+      fix for these entries to sync at all -- unknown_user / unknown_project /
+      no_task, checked against the SAME one mapping fetch.
+
+    Fail open -- any failure (Toggl fetch, mapping fetch, anything) returns
+    total_flagged=0 / held_count=0 so the caller (runSync's non-blocking
+    preflight) proceeds with the sync exactly as if nothing were flagged."""
     default_url = "https://backoffice.pltheatrical.com/#/corrections?source=time-entry"
+    zeros = {"entry_count": 0, "total_flagged": 0, "by_reason": {}, "held_count": 0, "corrections_url": default_url}
     try:
         date_range = sync_engine.get_import_date_range()
         approved_tag = sync_engine.get_approved_tag_name()
@@ -308,17 +425,15 @@ def _post_preflight_check(params):
             if any(t.lower() == approved_tag.lower() for t in resolve_entry_tags(e, tag_map))
         ]
         already_synced_map = sync_engine.build_already_synced_map()
-        # Keep the full entry objects (not just ids) so held_count can be
-        # computed LIVE off each entry's real billable flag + the same
-        # get_bill_rates fetch the real sync run uses -- Back Office's stored
-        # held_count can trail reality, so it is ignored entirely below.
         to_sync = [e for e in approved_entries if str(e.get("id")) not in already_synced_map]
-        to_sync_ids = [e.get("id") for e in to_sync]
+
+        if not to_sync:
+            return zeros  # nothing pending -> no Toggl/Back Office spend at all
 
         # Held CANDIDATES first, cheaply: a billable entry whose bill rate is
         # unresolved per bill_rate_hold, off ONE get_bill_rates call (Back
-        # Office, not Toggl -- no Toggl quota spent here). This is the same
-        # payload shape and hold rule the run uses.
+        # Office, not Toggl -- no Toggl quota spent here). Same payload shape
+        # and hold rule the run uses.
         payload = sync_engine.build_bill_rate_payload(to_sync)
         bill_rates, hold_reasons = back_office_client.get_bill_rates(payload)
         candidates = [
@@ -329,17 +444,21 @@ def _post_preflight_check(params):
         ]
 
         if not candidates:
-            # Nothing can be held -> held_count 0 with NO mapping/lookup calls.
-            # Skip the shared prep entirely (no build_toggl_lookups /
-            # build_mapping_lookups, so no Toggl workspace-bucket spend).
+            # Nothing can be held -> held_count 0, and the Toggl-quota-expensive
+            # build_toggl_lookups is skipped (zero-candidate short-circuit). The
+            # correction counts still need mappings, so fetch them ONCE here
+            # (Back Office, not Toggl); a failure short-circuits to zeros.
             held_count = 0
+            mappings = back_office_client.build_mapping_lookups(abort_on_failure=False)
+            if not mappings:
+                return zeros
         else:
-            # Only now run the shared bulk prep ONCE (build_toggl_lookups'
-            # fetches share Toggl's workspace hourly quota bucket; the
-            # get_bill_rates above hit Back Office, not Toggl). A candidate
-            # whose mappings FAIL is dropped -- the run would mark it Failed,
-            # not Held -- via would_hold, which resolves mappings before the
-            # bill-rate hold, matching sync_single_entry's order.
+            # A candidate exists: run the shared bulk prep ONCE
+            # (build_toggl_lookups + build_mapping_lookups), reuse its mappings
+            # for the correction counts below (no second mapping fetch). A
+            # candidate whose mappings FAIL is dropped via would_hold -- the run
+            # would mark it Failed, not Held. A mapping-fetch failure here raises
+            # and is caught by the fail-open except, matching the real run.
             processed_entries, mappings, prep_bill_rates, prep_hold_reasons = \
                 sync_engine.prepare_approved_entries(to_sync, toggl)
             candidate_ids = {str(e.get("id")) for e in candidates}
@@ -348,20 +467,33 @@ def _post_preflight_check(params):
                 if str(p["togglEntryId"]) in candidate_ids
                 and sync_engine.would_hold(p, mappings, prep_bill_rates, prep_hold_reasons)
             )
-    except Exception:
-        return {"entry_count": 0, "total_flagged": 0, "by_reason": {}, "held_count": 0, "corrections_url": default_url}
 
-    # get_preflight supplies ONLY total_flagged / by_reason / corrections_url;
-    # its held_count is ignored (live held_count above is authoritative). Its
-    # own fail-open path degrades to zeros, so total_flagged stays 0 on a Back
-    # Office failure while the live held_count still stands.
-    result = back_office_client.get_preflight(to_sync_ids)
+        # Live correction counts off the raw Toggl ids + the one mappings dict
+        # (never build_toggl_lookups, never a per-entry Toggl call). Mirrors
+        # resolve_sync_mappings' own failure reasons so the number matches what
+        # the operator must fix for these entries to sync.
+        users_map = mappings.get("users") or {}
+        projects_map = mappings.get("projects") or {}
+        tasks_map = mappings.get("tasks") or {}
+        unknown_user = sum(1 for e in to_sync if str(e.get("user_id")) not in users_map)
+        unknown_project = sum(1 for e in to_sync if str(e.get("project_id")) not in projects_map)
+        no_task = sum(1 for e in to_sync if not e.get("task_id") or str(e.get("task_id")) not in tasks_map)
+    except Exception:
+        return zeros
+
+    by_reason = {}
+    if unknown_user:
+        by_reason["unknown_user"] = unknown_user
+    if unknown_project:
+        by_reason["unknown_project"] = unknown_project
+    if no_task:
+        by_reason["no_task"] = no_task
     return {
-        "entry_count": len(to_sync_ids),
-        "total_flagged": result.get("total_flagged", 0),
-        "by_reason": result.get("by_reason") or {},
+        "entry_count": len(to_sync),
+        "total_flagged": unknown_user + unknown_project + no_task,
+        "by_reason": by_reason,
         "held_count": held_count,
-        "corrections_url": result.get("corrections_url") or default_url,
+        "corrections_url": default_url,
     }
 
 
@@ -462,6 +594,7 @@ READ_ACTIONS = {
     "getConnectionStatus": _get_connection_status,
     "getProjectPendingEntries": _get_project_pending_entries,
     "previewApproved": _preview_approved,  # reachable via GET, matching the frontend's actual usage
+    "getNeedsAttention": _get_needs_attention,
 }
 POST_ONLY_ACTIONS = {
     "syncApproved": _post_sync_approved,

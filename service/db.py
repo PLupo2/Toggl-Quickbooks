@@ -30,7 +30,13 @@ CREATE TABLE IF NOT EXISTS sync_log (
     description TEXT,
     billable INTEGER,
     status TEXT,
-    error TEXT
+    error TEXT,
+    -- Toggl-side ids (added 2026-11-19): let the Needs Attention / remedy
+    -- surfaces build deep links straight from a stored row, no Toggl call.
+    -- Appended last so a fresh CREATE matches an ALTER-migrated table.
+    toggl_project_id TEXT,
+    toggl_task_id TEXT,
+    toggl_user_id TEXT
 );
 
 -- Index for buildAlreadySyncedMap()'s equivalent: the idempotency guard reads
@@ -108,6 +114,15 @@ def init_db():
         conn.execute("ALTER TABLE sync_job ADD COLUMN total_entries INTEGER DEFAULT 0")
     if "total_held" not in existing_cols:
         conn.execute("ALTER TABLE sync_job ADD COLUMN total_held INTEGER DEFAULT 0")
+    # Same additive pattern for sync_log's Toggl-id columns (added 2026-11-19):
+    # CREATE TABLE IF NOT EXISTS won't add them to the live, long-existing
+    # sync_log, so ALTER each in idempotently. Per the TimeSync CLAUDE.md
+    # new-sync_log-column rule, data/timesync.db is backed up + integrity-checked
+    # before this migration lands on a deploy (see backfill_toggl_ids.py runbook).
+    sync_log_cols = {row["name"] for row in conn.execute("PRAGMA table_info(sync_log)")}
+    for col in ("toggl_project_id", "toggl_task_id", "toggl_user_id"):
+        if col not in sync_log_cols:
+            conn.execute(f"ALTER TABLE sync_log ADD COLUMN {col} TEXT")
     # Seed defaults without overwriting anything already set (same contract
     # as syncMissingConfigKeys: additive only).
     existing = {row["key"] for row in conn.execute("SELECT key FROM settings")}

@@ -1383,3 +1383,56 @@ td.editable:hover {
     border-radius: var(--radius-md);
   }
 }
+
+/* ===========================================================================
+   Needs Attention (Sync Entries) + inline log remedy + resolved-later tag
+   =========================================================================== */
+.na-card {
+  border-left: 3px solid var(--warning);
+}
+.na-subtitle {
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin: 4px 0 16px;
+}
+.na-group {
+  margin-bottom: 18px;
+}
+.na-group:last-child {
+  margin-bottom: 0;
+}
+.na-instruction {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  background: var(--warning-light);
+  border-radius: var(--radius-sm, 6px);
+}
+.na-link {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.na-table {
+  font-size: 13px;
+}
+.na-table th {
+  font-weight: 600;
+}
+
+/* Inline fix guidance shown on a Failed/Held Sync Log row. */
+.log-fix {
+  font-weight: 600;
+}
+
+/* "resolved later" pill next to a Failed/Held status that was re-synced. */
+.resolved-later-tag {
+  margin-left: 6px;
+  font-size: 11px;
+  opacity: 0.85;
+}
