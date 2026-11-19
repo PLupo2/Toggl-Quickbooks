@@ -29,7 +29,15 @@ def discord_alert(title, message):
     body = json.dumps({"content": f"**{title}**\n```\n{message}\n```"}).encode()
     try:
         req = urllib.request.Request(
-            webhook_url, data=body, headers={"Content-Type": "application/json"}, method="POST"
+            webhook_url,
+            data=body,
+            # Discord's Cloudflare blocks urllib's default User-Agent (403/1010)
+            # -- verified 2026-11-18 against the real webhook.
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "DiscordBot (https://pltheatrical.com, 1.0)",
+            },
+            method="POST",
         )
         urllib.request.urlopen(req, timeout=10)
     except Exception as exc:  # noqa: BLE001 -- alerting is best-effort

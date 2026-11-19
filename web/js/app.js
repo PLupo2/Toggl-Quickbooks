@@ -542,13 +542,20 @@ const Pages = {
               `bill rate and will be held (not pushed) this run.`
             );
           }
-          const proceed = confirm(
-            parts.join('\n\n') +
-            `\n\nPress OK to sync anyway, or Cancel to review corrections first.`
-          );
+          // Modal.confirm only resolves on an explicit button click -- unlike
+          // native confirm(), a backgrounded tab can't auto-dismiss it and
+          // silently take the Cancel path (see the Modal comment above).
+          const proceed = await Modal.confirm({
+            title: 'Review before syncing?',
+            message: parts.join('\n\n'),
+            confirmText: 'Sync anyway',
+            cancelText: 'Review corrections'
+          });
           if (!proceed) {
+            // window.open from this click (not a timer/promise callback) so
+            // it's a genuine user gesture and isn't popup-blocked.
             window.open(preflight.corrections_url, '_blank');
-            Toast.info('Sync cancelled — opening corrections page.');
+            Toast.info('Sync cancelled — opening corrections page.', { persist: true });
             if (btn) { btn.disabled = false; btn.textContent = 'Sync Now'; }
             return;
           }
@@ -1038,6 +1045,65 @@ const Pages = {
     } catch (err) {
       Toast.error('Save failed: ' + err.message);
     }
+  }
+};
+
+// ===========================================================================
+// Confirm modal
+// ===========================================================================
+// Replaces the native confirm() dialog for decisions that must not
+// auto-cancel. A background tab auto-dismisses confirm() (returns false)
+// the instant the browser decides to reclaim it -- real incident 2026-11-18:
+// Philip clicked Sync, switched tabs, and confirm() silently took the
+// Cancel path on every one of 6+ attempts, so syncApproved never ran. This
+// modal only resolves on an explicit button click: no backdrop click, no
+// Escape key, no auto-dismiss.
+const Modal = {
+  confirm({ title, message, confirmText = 'OK', cancelText = 'Cancel' }) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+
+      const box = document.createElement('div');
+      box.className = 'modal-box';
+
+      if (title) {
+        const titleEl = document.createElement('div');
+        titleEl.className = 'modal-title';
+        titleEl.textContent = title;
+        box.appendChild(titleEl);
+      }
+
+      const messageEl = document.createElement('div');
+      messageEl.className = 'modal-message';
+      messageEl.textContent = message;
+      box.appendChild(messageEl);
+
+      const actions = document.createElement('div');
+      actions.className = 'modal-actions';
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.className = 'btn';
+      cancelBtn.textContent = cancelText;
+
+      const confirmBtn = document.createElement('button');
+      confirmBtn.className = 'btn btn-primary';
+      confirmBtn.textContent = confirmText;
+
+      const resolveOnce = (result) => {
+        overlay.remove();
+        resolve(result);
+      };
+      cancelBtn.onclick = () => resolveOnce(false);
+      confirmBtn.onclick = () => resolveOnce(true);
+
+      actions.appendChild(cancelBtn);
+      actions.appendChild(confirmBtn);
+      box.appendChild(actions);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+      confirmBtn.focus();
+    });
   }
 };
 
