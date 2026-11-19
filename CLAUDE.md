@@ -417,6 +417,49 @@ two-step decision the run uses.
   short-circuit live). The mapped/unmapped-candidate branches are covered by
   the seeded unit/parity tests -- the same paths are now live in production.
 
+## SYNC CONFIRM MODAL + DISCORD ALERT 403 (fixed 2026-11-18, DEPLOYED)
+
+Two bugs found by Philip 2026-11-18.
+
+- **Sync button silently cancelled.** `runSync`'s preflight dialog used
+  native `confirm()`. A browser auto-dismisses `confirm()` (returns `false`)
+  if the tab is backgrounded while it's open -- real incident: Philip
+  clicked Sync, switched tabs, and every one of 6+ attempts silently took
+  the Cancel path (popup-blocked `window.open` + a 4s toast); `syncApproved`
+  was sent exactly once that day. Fixed with a new `Modal.confirm` component
+  (`web/js/app.js`, new `.modal-overlay`/`.modal-box`/`.modal-actions` CSS in
+  `web/css/styles.css`) that only resolves on an explicit button click --
+  no backdrop click, no Escape, no auto-dismiss. `runSync` now awaits it
+  with "Sync anyway" / "Review corrections" buttons; the cancel toast
+  passes `{ persist: true }` so it no longer auto-dismisses after 4s either.
+  Preflight itself is still fail-open (unchanged).
+- **Discord failure alerts 403'd.** `service/alerts.py`'s `discord_alert`
+  sent no `User-Agent`; Discord's Cloudflare blocks urllib's default UA
+  (403/1010) -- verified in the container: webhook GET with the default UA
+  = 403/1010, with `"DiscordBot (https://pltheatrical.com, 1.0)"` = 200.
+  Fixed by sending that UA on every alert request. Best-effort error
+  swallowing unchanged.
+- No app.js cache-buster exists to bump -- unnecessary anyway, since
+  `service/app.py` already sends `Cache-Control: no-cache` on every
+  static/index response (the 2026-08-13 post-cutover fix), so no deploy
+  can serve a stale `app.js`.
+- Tests: `tests/test_alerts.py` (3 -- UA header asserted via mocked
+  `urlopen`, missing-webhook short-circuit, urlopen-failure swallowed).
+  No JS test harness exists in this repo, so the modal was verified
+  manually (see below) rather than with a JS unit test. Full suite 58/58
+  green.
+- Scope held exactly to the two bugs: no sync run, no QBO write, no Toggl
+  call (Toggl quota had hit 402 on 2026-11-18).
+- Deployed 2026-11-18T20:57 EST (no DB migration -- UI/alerting only;
+  container rebuilt via `docker-compose up -d --build`, healthy;
+  `DiscordBot` UA string and `modal-overlay`/`Modal.confirm` confirmed
+  present in the running image's `alerts.py`/`app.js`). Verified live
+  without triggering a sync: fetched `app.js` from the running container's
+  own origin (`http://localhost:5175/js/app.js` on the Mac Mini, bypassing
+  Cloudflare Access) and confirmed it is byte-identical to the pushed repo
+  file, contains `Modal.confirm`/`modal-overlay`/"Sync anyway"/"Review
+  corrections", and has no bare `confirm(` call left in the sync flow.
+
 ## MODEL ROUTING
 - L1 for config changes, CSS tweaks
 - L2 for mapping logic, sync workflow, API client changes
